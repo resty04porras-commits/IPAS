@@ -1,0 +1,92 @@
+# ============================================================
+# IPAS - Git Ignore
+# ============================================================
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-server/
+build/
+coverage/
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime / Uploaded Files
+uploads/
+temp/
+tmp/
+
+# Backups
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*backup*
+*BACKUP*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+ocr-service/.venv/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Runtime PID / lock files
+*.pid
+*.pid.lock
+
+# Local cache
+.cache/
+
+# ============================================================
+# IPAS Additional Local / Sensitive Files
+# ============================================================
+
+# Claude local configuration
+.claude/settings.local.json
+
+# PaddleX local/cache files
+.paddlex/
+
+# Generated migration containing actual TER/business data
+database/migrations/002_migrate_ter_entries.sql
+
+# Internal reference documents/templates
+reference_files/
+
+# Compiled release packages
+release-build/
+
+# Electron generated releases
+release/
+out/
+
+# Legacy / separate Python edition - keep local for now
+ipas-python/
+.claude/

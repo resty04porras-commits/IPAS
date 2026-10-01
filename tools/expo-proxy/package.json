@@ -1,0 +1,8 @@
+{
+  "name": "expo-root-proxy",
+  "private": true,
+  "version": "1.0.0",
+  "bin": {
+    "expo": "./bin/expo.cjs"
+  }
+}

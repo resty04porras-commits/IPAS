@@ -1,0 +1,52 @@
+appId: org.iictd.assetdocs
+productName: IICTD Process Automation System (IPAS)
+copyright: "Copyright © 2025 IICTD"
+
+directories:
+  output: release-build/windows-app
+  buildResources: electron
+
+# Files included in the ASAR (app bundle)
+files:
+  - electron/**/*
+  - "!electron/icon-source*"
+
+# Extra resources placed in resources/ (accessible via process.resourcesPath)
+extraResources:
+  - from: dist
+    to: dist
+    filter:
+      - "**/*"
+  - from: dist-server
+    to: dist-server
+    filter:
+      - "**/*"
+  - from: public
+    to: public
+    filter:
+      - "**/*"
+  - from: release-apk
+    to: release-apk
+    filter:
+      - "*.apk"
+
+# ── Windows ──────────────────────────────────────────────────────────────────
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  requestedExecutionLevel: asInvoker
+
+portable:
+  artifactName: "IPAS.exe"
+
+# ── macOS (future) ───────────────────────────────────────────────────────────
+mac:
+  target: dmg
+  category: public.app-category.productivity
+
+# ── Linux (future) ───────────────────────────────────────────────────────────
+linux:
+  target: AppImage
+  category: Office

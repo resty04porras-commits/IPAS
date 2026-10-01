@@ -1,0 +1,13 @@
+# PyTorch CPU wheels (EasyOCR runs with gpu=False on this server).
+# The +cpu builds avoid pulling multi-GB CUDA dependencies.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+easyocr
+torch
+torchvision
+opencv-python==4.10.0.84
+Pillow==11.0.0
+numpy==2.2.1
