@@ -7,6 +7,18 @@ const toolsDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(toolsDir, "..");
 process.chdir(projectRoot);
 
+// Load application environment before importing the production server bundle.
+const dotenv = await import("dotenv");
+dotenv.config({
+  path: path.join(projectRoot, ".env"),
+  quiet: true,
+});
+dotenv.config({
+  path: path.join(projectRoot, ".env.local"),
+  override: true,
+  quiet: true,
+});
+
 process.env.NODE_ENV = "production";
 process.env.APP_RUNTIME_MODE = process.env.APP_RUNTIME_MODE || "production";
 process.env.OCR_ENGINE = process.env.OCR_ENGINE || "easyocr";

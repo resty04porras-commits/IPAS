@@ -15,6 +15,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import * as XLSX from "xlsx";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { InventoryItem, CreateInventoryItemDTO } from "./inventory";
+import terRoutes from "./routes/terRoutes.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env"), quiet: true } as any);
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: true, quiet: true } as any);
@@ -7926,33 +7927,8 @@ async function startServer() {
     }
   });
 
-  app.post("/api/ter/travel-entry", async (req, res) => {
-    try {
-      const body = req.body as { terId?: unknown; entry?: unknown } | undefined;
-      const terId = sanitizeTerId(body?.terId);
-      const entry = sanitizeTerTravelEntry(terId, body?.entry);
-      const savedEntry = await upsertTerTravelEntry(entry);
-      res.status(200).json({ entry: savedEntry });
-    } catch (error: any) {
-      console.error("TER travel entry save error:", error);
-      res.status(500).json({ error: error?.message || "Failed to save the TER travel entry." });
-    }
-  });
-
-  app.get("/api/ter/travel-entries", async (req, res) => {
-    try {
-      const terId = sanitizeTerId(req.query.terId);
-      const entries = await getTerTravelEntries(terId);
-      res.status(200).json({
-        terId,
-        entries,
-        updatedAt: new Date().toISOString(),
-      });
-    } catch (error: any) {
-      console.error("TER travel entries load error:", error);
-      res.status(500).json({ error: error?.message || "Failed to load TER travel entries." });
-    }
-  });
+  // TER travel-entry persistence is handled by PostgreSQL.
+  app.use("/api/ter", terRoutes);
 
   app.post([
     "/api/export-accountability-form",
