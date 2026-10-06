@@ -14,8 +14,18 @@ import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 import * as XLSX from "xlsx";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { InventoryItem, CreateInventoryItemDTO } from "./inventory";
 import terRoutes from "./routes/terRoutes.js";
+import { createTerLiquidationController } from "./controllers/terController.js";
+import assetRoutes from "./routes/assetRoutes.js";
+import { createAccountabilityController } from "./controllers/accountabilityController.js";
+import { createAccountabilityRoutes } from "./routes/accountabilityRoutes.js";
+import { createManagementController } from "./controllers/managementController.js";
+import { createManagementRoutes } from "./routes/managementRoutes.js";
+import { createAuthController } from "./controllers/authController.js";
+import { createAuthRoutes } from "./routes/authRoutes.js";
+import { createDocumentRepositoryController } from "./controllers/documentRepositoryController.js";
+import { createCameraSyncController } from "./controllers/cameraSyncController.js";
+import { createCameraSyncRoutes } from "./routes/cameraSyncRoutes.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env"), quiet: true } as any);
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: true, quiet: true } as any);
@@ -1673,21 +1683,45 @@ async function recognizeOcrSnapshotWithLegacyWorker(
 }
 
 async function recognizeOcrSnapshot(file: CompareSourceFile, options: OcrRecognizeOptions = {}): Promise<OcrSnapshot> {
-  if (shouldUsePaddleOcrService() && file.contentType === "inlineData") {
+  if (file.contentType !== "inlineData") {
+    return buildPlainTextSnapshot(file.content || "");
+  }
+
+  // Primary: local PaddleOCR worker.
+  try {
+    const startedAt = Date.now();
+    const snapshot = await recognizeOcrSnapshotWithLegacyWorker(file, options);
+    console.log(
+      `[OCR] primary=paddle-worker file="${file.name}" elapsed=${Date.now() - startedAt}ms fallback=false`
+    );
+    return snapshot;
+  } catch (error) {
+    console.warn(
+      `[OCR] primary=paddle-worker file="${file.name}" failed=true error=${extractUpstreamErrorMessage(error)}`
+    );
+  }
+
+  // Fallback: Python HTTP OCR service (currently EasyOCR).
+  if (shouldUsePaddleOcrService()) {
     try {
+      const startedAt = Date.now();
       const result = await postToPaddleOcrService(file, {
         rectangle: options.rectangle,
         mode: options.mode || "full",
       });
+      console.log(
+        `[OCR] fallback=easyocr-service file="${file.name}" elapsed=${Date.now() - startedAt}ms`
+      );
       return result.snapshot || buildPlainTextSnapshot("");
     } catch (error) {
       console.warn(
-        `[OCR] engine=paddle-service file="${file.name}" fallback=true error=${extractUpstreamErrorMessage(error)}`
+        `[OCR] fallback=easyocr-service file="${file.name}" failed=true error=${extractUpstreamErrorMessage(error)}`
       );
+      throw error;
     }
   }
 
-  return recognizeOcrSnapshotWithLegacyWorker(file, options);
+  throw new Error("No OCR engine is available.");
 }
 
 async function recognizeOcrSnapshotBatchWithLegacyWorker(
@@ -1717,21 +1751,49 @@ async function recognizeOcrSnapshotBatchWithLegacyWorker(
 }
 
 async function recognizeOcrSnapshotBatch(file: CompareSourceFile, probes: OcrBatchProbe[]): Promise<Record<string, OcrSnapshot>> {
-  if (shouldUsePaddleOcrService() && file.contentType === "inlineData") {
+  if (probes.length === 0) {
+    return {};
+  }
+
+  if (file.contentType !== "inlineData") {
+    return recognizeOcrSnapshotBatchWithLegacyWorker(file, probes);
+  }
+
+  // Primary: local PaddleOCR worker for regional probes.
+  try {
+    const startedAt = Date.now();
+    const snapshots = await recognizeOcrSnapshotBatchWithLegacyWorker(file, probes);
+    console.log(
+      `[OCR] primary=paddle-worker file="${file.name}" probes=${probes.length} elapsed=${Date.now() - startedAt}ms fallback=false`
+    );
+    return snapshots;
+  } catch (error) {
+    console.warn(
+      `[OCR] primary=paddle-worker file="${file.name}" probes=${probes.length} failed=true error=${extractUpstreamErrorMessage(error)}`
+    );
+  }
+
+  // Fallback: Python HTTP OCR service (currently EasyOCR).
+  if (shouldUsePaddleOcrService()) {
     try {
+      const startedAt = Date.now();
       const result = await postToPaddleOcrService(file, {
         rectangles: probes,
         mode: "probe",
       });
+      console.log(
+        `[OCR] fallback=easyocr-service file="${file.name}" probes=${probes.length} elapsed=${Date.now() - startedAt}ms`
+      );
       return result.snapshots || {};
     } catch (error) {
       console.warn(
-        `[OCR] engine=paddle-service file="${file.name}" probes=${probes.length} fallback=true error=${extractUpstreamErrorMessage(error)}`
+        `[OCR] fallback=easyocr-service file="${file.name}" probes=${probes.length} failed=true error=${extractUpstreamErrorMessage(error)}`
       );
+      throw error;
     }
   }
 
-  return recognizeOcrSnapshotBatchWithLegacyWorker(file, probes);
+  throw new Error("No OCR engine is available for regional probes.");
 }
 
 function getMeaningfulOcrLines(text: string): string[] {
@@ -2245,7 +2307,7 @@ function inferComponentFromHardwareId(hardwareId: string): string {
     ADP: "CPU ADAPTER",
     CAD: "CPU ADAPTER",
     LAD: "LAPTOP ADAPTER",
-    SCN: "SCANNER",
+    SCN: "SCANSNAP",
     SWT: "SWITCH",
     SW: "SWITCH",
     RTR: "ROUTER",
@@ -2270,7 +2332,8 @@ function inferComponentFromText(text: string, hardwareId: string): string {
     { label: "WEBCAM", patterns: [/\bWEBCAM\b/i, /\bCAMERA\b/i] },
     { label: "SYSTEM UNIT", patterns: [/\bSYSTEM UNIT\b/i, /\bDESKTOP\b/i, /\bTHIN CLIENT\b/i, /\bMINI PC\b/i, /\bOPTIPLEX\b/i, /\bELITEDESK\b/i] },
     { label: "LAPTOP", patterns: [/\bLAPTOP\b/i, /\bNOTEBOOK\b/i, /\bTHINKPAD\b/i, /\bELITEBOOK\b/i, /\bPAVILION\b/i, /\bINSPIRON\b/i] },
-    { label: "SCANNER", patterns: [/\bSCANNER\b/i, /\bSCANSNAP\b/i, /\bDOCUMENT SCANNER\b/i] },
+    { label: "SCANSNAP", patterns: [/\bSCANSNAP\b/i] },
+    { label: "SCANNER", patterns: [/\bSCANNER\b/i, /\bDOCUMENT SCANNER\b/i] },
     { label: "ROUTER", patterns: [/\bROUTER\b/i, /\bWIRELESS ACCESS POINT\b/i] },
     { label: "SWITCH", patterns: [/\bSWITCH\b/i, /\bNETWORK SWITCH\b/i] },
     // Match both spellings: ADAPTER and ADAPTOR
@@ -7391,8 +7454,46 @@ async function startServer() {
     return sessionUser;
   };
 
+  // Accountability controller and routes
+  const terLiquidationController = createTerLiquidationController({
+    prepareUploadedFileForComparison,
+    extractLiquidationRecordsFromEvidence,
+    isInvalidStructuredResponse,
+    isGeminiUnavailable,
+    extractUpstreamErrorMessage,
+    sanitizeLiquidationPayload,
+    getLiquidationExportFormat,
+    generateLiquidationExport,
+  });
+
+  const accountabilityController = createAccountabilityController({
+    upload,
+    apiHistory,
+    requireSuperAdmin,
+    normalizeIntakeRecord,
+    normalizeBarcodeLookupValue,
+    findRecordByBarcode,
+    prepareUploadedFileForComparison,
+    extractReferenceRecords,
+    postToPaddleBarcodeService,
+    extractUpstreamErrorMessage,
+    buildPlainTextSnapshot,
+    postToPaddleOcrService,
+    recognizeOcrSnapshotWithLegacyWorker,
+    extractIntakeRecordsResilient,
+    extractIntakeRecordsByBarcode,
+    combineExtractionNotes,
+    mergeConsolidatedIntakeRecords,
+    isInvalidStructuredResponse,
+    isGeminiUnavailable,
+    runGeminiComparison,
+    sanitizeAccountabilityPayload,
+    getAccountabilityExportFormat,
+    generateAccountabilityExport,
+  });
+  const accountabilityRoutes = createAccountabilityRoutes(accountabilityController);
+
   // In-memory inventory store
-  const inventory: InventoryItem[] = [];
 
   // In-memory user store
   const users: any[] = [
@@ -7410,6 +7511,16 @@ async function startServer() {
       mustChangePassword: false
     }
   ];
+
+  const managementController = createManagementController({
+    users,
+  });
+  const managementRoutes = createManagementRoutes(managementController);
+  const authController = createAuthController({ users });
+  const cameraSyncController = createCameraSyncController();
+  const cameraSyncRoutes = createCameraSyncRoutes(cameraSyncController);
+  const authRoutes = createAuthRoutes(authController);
+
 
   // API routes
   app.get("/api/health", async (req, res) => {
@@ -7511,421 +7622,27 @@ async function startServer() {
     }
   });
 
-  app.post("/api/compare", async (req, res) => {
-    const { source1, source2 } = req.body as {
-      source1?: CompareSourceFile;
-      source2?: CompareSourceFile[];
-    };
-
-    if (!source1 || !Array.isArray(source2) || source2.length === 0) {
-      return res.status(400).json({ error: "Comparison request is missing source files." });
-    }
-
-    try {
-      const results = await runGeminiComparison(source1, source2);
-      res.json(results);
-    } catch (error: any) {
-      console.error("Comparison error:", error);
-
-      if (isInvalidStructuredResponse(error)) {
-        console.error("Malformed Gemini JSON snippet:", error.responseSnippet);
-        return res.status(502).json({
-          error: "Comparison service returned incomplete structured data. Please try the comparison again.",
-        });
-      }
-
-      if (error?.message?.includes("GEMINI_API_KEY")) {
-        return res.status(503).json({ error: "GEMINI_API_KEY is not configured. Create .env.local and restart the server." });
-      }
-
-      if (
-        error?.message?.includes("429") ||
-        error?.message?.includes("RESOURCE_EXHAUSTED") ||
-        error?.message?.includes("quota exceeded")
-      ) {
-        return res.status(429).json({ error: "Gemini API quota exceeded. Please wait a few minutes and try again." });
-      }
-
-      if (isGeminiUnavailable(error)) {
-        return res.status(503).json({ error: "Comparison service is temporarily busy. Please try again in a moment." });
-      }
-
-      if (
-        error?.message?.includes("403") ||
-        error?.message?.includes("PERMISSION_DENIED")
-      ) {
-        return res.status(403).json({ error: "Gemini API permission denied. Check your GEMINI_API_KEY." });
-      }
-
-      return res.status(500).json({ error: extractUpstreamErrorMessage(error) || "Comparison failed." });
-    }
-  });
-
-  app.post("/api/compare-upload", (req, res, next) => {
-    upload.fields([
-      { name: "source1", maxCount: 1 },
-      { name: "source2", maxCount: 20 },
-    ])(req, res, (err) => {
-      if (err instanceof multer.MulterError) {
-        return res.status(400).json({ error: `Upload error: ${err.message}` });
-      }
-      if (err) {
-        return res.status(500).json({ error: err.message || "Failed to process comparison upload." });
-      }
-      next();
-    });
-  }, async (req: Request, res) => {
-    const files = ((req as any).files || {}) as Record<string, Express.Multer.File[]>;
-    const source1File = files.source1?.[0];
-    const source2Files = files.source2 || [];
-    const uploadedFiles = [source1File, ...source2Files].filter(Boolean) as Express.Multer.File[];
-
-    if (!source1File || source2Files.length === 0) {
-      for (const file of uploadedFiles) {
-        await fs.promises.unlink(file.path).catch(() => undefined);
-      }
-      return res.status(400).json({ error: "Comparison request is missing source files." });
-    }
-
-    try {
-      const preparedSource1 = await prepareUploadedFileForComparison(source1File);
-      const preparedSource2 = await Promise.all(source2Files.map(prepareUploadedFileForComparison));
-      const results = await runGeminiComparison(preparedSource1, preparedSource2);
-      res.json(results);
-    } catch (error: any) {
-      console.error("Comparison upload error:", error);
-
-      if (isInvalidStructuredResponse(error)) {
-        return res.status(502).json({
-          error: "Comparison service returned incomplete structured data. Please try the comparison again.",
-        });
-      }
-
-      if (error?.message?.includes("GEMINI_API_KEY")) {
-        return res.status(503).json({ error: "GEMINI_API_KEY is not configured. Create .env.local and restart the server." });
-      }
-
-      if (
-        error?.message?.includes("429") ||
-        error?.message?.includes("RESOURCE_EXHAUSTED") ||
-        error?.message?.includes("quota exceeded")
-      ) {
-        return res.status(429).json({ error: "Gemini API quota exceeded. Please wait a few minutes and try again." });
-      }
-
-      if (isGeminiUnavailable(error)) {
-        return res.status(503).json({ error: "Comparison service is temporarily busy. Please try again in a moment." });
-      }
-
-      if (
-        error?.message?.includes("403") ||
-        error?.message?.includes("PERMISSION_DENIED")
-      ) {
-        return res.status(403).json({ error: "Gemini API permission denied. Check your GEMINI_API_KEY." });
-      }
-
-      return res.status(500).json({ error: extractUpstreamErrorMessage(error) || "Comparison failed." });
-    } finally {
-      for (const file of uploadedFiles) {
-        await fs.promises.unlink(file.path).catch(() => undefined);
-      }
-    }
-  });
-
-  app.post("/api/barcode/lookup", (req, res) => {
-    const barcode = typeof req.body?.barcode === "string" ? req.body.barcode : "";
-    const records = Array.isArray(req.body?.records)
-      ? req.body.records.map((record: Partial<IntakeRecord>) => normalizeIntakeRecord(record))
-      : [];
-    const matchedRecord = findRecordByBarcode(barcode, records);
-
-    if (matchedRecord) {
-      return res.json({
-        success: true,
-        barcode,
-        type: null,
-        matched: true,
-        record: matchedRecord,
-        message: "Record found",
+  app.post(
+    "/api/liquidation/extract",
+    (req, res, next) => {
+      upload.array("evidence")(req, res, (err) => {
+        if (err instanceof multer.MulterError) {
+          return res.status(400).json({
+            error: `Upload error: ${err.message}`,
+          });
+        }
+        if (err) {
+          return res.status(500).json({
+            error:
+              err.message ||
+              "Failed to process liquidation receipt upload.",
+          });
+        }
+        next();
       });
-    }
-
-    res.json({
-      success: Boolean(normalizeBarcodeLookupValue(barcode)),
-      barcode: normalizeBarcodeLookupValue(barcode) ? barcode : null,
-      type: null,
-      matched: false,
-      record: null,
-      message: normalizeBarcodeLookupValue(barcode)
-        ? "No record found for this barcode."
-        : "No barcode detected. Please capture a clearer image.",
-    });
-  });
-
-  app.post("/api/barcode/scan", (req, res, next) => {
-    upload.any()(req, res, (err) => {
-      if (err instanceof multer.MulterError) {
-        return res.status(400).json({ error: `Upload error: ${err.message}` });
-      }
-      if (err) {
-        return res.status(500).json({ error: err.message || "Failed to process barcode upload." });
-      }
-      next();
-    });
-  }, async (req: Request, res) => {
-    const files = (((req as any).files || []) as Express.Multer.File[]).filter(Boolean);
-    const uploadedFile = files[0];
-    const rawReferenceSource = typeof (req.body as any)?.referenceSource === "string"
-      ? (req.body as any).referenceSource
-      : "";
-    const rawRecords = typeof (req.body as any)?.records === "string"
-      ? (req.body as any).records
-      : "";
-
-    if (!uploadedFile) {
-      return res.status(400).json({
-        success: false,
-        barcode: null,
-        matched: false,
-        record: null,
-        message: "Upload one barcode image using the image or file field.",
-      });
-    }
-
-    try {
-      const preparedFile = await prepareUploadedFileForComparison(uploadedFile);
-      if (preparedFile.kind !== "image") {
-        return res.status(400).json({
-          success: false,
-          barcode: null,
-          matched: false,
-          record: null,
-          message: "Barcode scan accepts image files only.",
-        });
-      }
-
-      const referenceSource = rawReferenceSource
-        ? JSON.parse(rawReferenceSource) as CompareSourceFile
-        : null;
-      const referenceRecords = extractReferenceRecords(referenceSource);
-      const providedRecords = rawRecords
-        ? JSON.parse(rawRecords).map((record: Partial<IntakeRecord>) => normalizeIntakeRecord(record))
-        : [];
-      const scan = await postToPaddleBarcodeService(preparedFile);
-
-      if (!scan.barcode) {
-        return res.json({
-          ...scan,
-          success: false,
-          matched: false,
-          record: null,
-          message: "No barcode detected. Please capture a clearer image.",
-        });
-      }
-
-      const matchedRecord = findRecordByBarcode(scan.barcode, [...providedRecords, ...referenceRecords]);
-      res.json({
-        ...scan,
-        success: true,
-        matched: Boolean(matchedRecord),
-        record: matchedRecord,
-        message: matchedRecord ? "Record found" : "No record found for this barcode.",
-      });
-    } catch (error: any) {
-      console.error("Barcode scan error:", error);
-      res.status(500).json({
-        success: false,
-        barcode: null,
-        type: null,
-        matched: false,
-        record: null,
-        message: extractUpstreamErrorMessage(error) || "Failed to scan barcode.",
-      });
-    } finally {
-      for (const file of files) {
-        await fs.promises.unlink(file.path).catch(() => undefined);
-      }
-    }
-  });
-
-  app.post("/api/ocr-v2", (req, res, next) => {
-    upload.any()(req, res, (err) => {
-      if (err instanceof multer.MulterError) {
-        return res.status(400).json({ error: `Upload error: ${err.message}` });
-      }
-      if (err) {
-        return res.status(500).json({ error: err.message || "Failed to process OCR upload." });
-      }
-      next();
-    });
-  }, async (req: Request, res) => {
-    const files = (((req as any).files || []) as Express.Multer.File[]).filter(Boolean);
-    const uploadedFile = files[0];
-
-    if (!uploadedFile) {
-      return res.status(400).json({ error: "Upload one image file using the image or file field." });
-    }
-
-    try {
-      const preparedFile = await prepareUploadedFileForComparison(uploadedFile);
-      if (preparedFile.kind !== "image") {
-        return res.status(400).json({ error: "OCR v2 currently accepts image files only." });
-      }
-
-      let snapshot: OcrSnapshot;
-      let engine = "paddle-service";
-      let fallback = false;
-      let serviceError = "";
-      const startedAt = Date.now();
-
-      try {
-        const result = await postToPaddleOcrService(preparedFile, { mode: "full" });
-        snapshot = result.snapshot || buildPlainTextSnapshot("");
-      } catch (error) {
-        serviceError = extractUpstreamErrorMessage(error);
-        fallback = true;
-        engine = "legacy-worker";
-        console.warn(`[OCR] /api/ocr-v2 fallback=true error=${serviceError}`);
-        snapshot = await recognizeOcrSnapshotWithLegacyWorker(preparedFile, { mode: "full" });
-      }
-
-      console.log(`[OCR] /api/ocr-v2 engine=${engine} elapsed=${Date.now() - startedAt}ms fallback=${fallback}`);
-      res.json({
-        text: snapshot.text,
-        confidence: snapshot.confidence,
-        lines: snapshot.lines,
-        words: snapshot.words,
-        boundingBoxes: snapshot.lines.map((line) => line.bbox),
-        width: snapshot.width,
-        height: snapshot.height,
-        snapshot,
-        raw: {
-          engine,
-          fallback,
-        },
-        error: serviceError || undefined,
-      });
-    } catch (error: any) {
-      console.error("OCR v2 error:", error);
-      const errorMessage = extractUpstreamErrorMessage(error) || "OCR failed.";
-      const status = errorMessage.startsWith("Unsupported file type:") ? 400 : 500;
-      res.status(status).json({
-        text: "",
-        confidence: 0,
-        lines: [],
-        words: [],
-        boundingBoxes: [],
-        width: 0,
-        height: 0,
-        snapshot: buildPlainTextSnapshot(""),
-        error: errorMessage,
-      });
-    } finally {
-      for (const file of files) {
-        await fs.promises.unlink(file.path).catch(() => undefined);
-      }
-    }
-  });
-
-  app.post("/api/intake/extract", (req, res, next) => {
-    upload.array("evidence")(req, res, (err) => {
-      if (err instanceof multer.MulterError) {
-        return res.status(400).json({ error: `Upload error: ${err.message}` });
-      }
-      if (err) {
-        return res.status(500).json({ error: err.message || "Failed to process intake upload." });
-      }
-      next();
-    });
-  }, async (req: Request, res) => {
-    const files = (((req as any).files || []) as Express.Multer.File[]).filter(Boolean);
-    const rawReferenceSource = typeof (req.body as any)?.referenceSource === "string"
-      ? (req.body as any).referenceSource
-      : "";
-
-    if (files.length === 0) {
-      return res.status(400).json({ error: "At least one evidence image is required." });
-    }
-
-    try {
-      const preparedEvidence = await Promise.all(files.map(prepareUploadedFileForComparison));
-      const referenceSource = rawReferenceSource
-        ? JSON.parse(rawReferenceSource) as CompareSourceFile
-        : null;
-      const referenceRecords = extractReferenceRecords(referenceSource);
-      const barcodeExtraction = await extractIntakeRecordsByBarcode(preparedEvidence, referenceRecords);
-      const extraction = barcodeExtraction || await extractIntakeRecordsResilient(preparedEvidence, referenceRecords);
-      res.json(extraction);
-    } catch (error: any) {
-      console.error("Intake extraction error:", error);
-
-      if (isInvalidStructuredResponse(error)) {
-        return res.status(502).json({
-          error: "The extraction service returned incomplete structured data. Please scan the images again.",
-        });
-      }
-
-      if (error?.message?.includes("GEMINI_API_KEY")) {
-        return res.status(503).json({ error: "GEMINI_API_KEY is not configured. Create .env.local and restart the server." });
-      }
-
-      if (isGeminiUnavailable(error)) {
-        return res.status(503).json({ error: "Extraction service is temporarily busy. Please try again in a moment." });
-      }
-
-      return res.status(500).json({ error: extractUpstreamErrorMessage(error) || "Failed to extract intake details." });
-    } finally {
-      for (const file of files) {
-        await fs.promises.unlink(file.path).catch(() => undefined);
-      }
-    }
-  });
-
-  app.post("/api/liquidation/extract", (req, res, next) => {
-    upload.array("evidence")(req, res, (err) => {
-      if (err instanceof multer.MulterError) {
-        return res.status(400).json({ error: `Upload error: ${err.message}` });
-      }
-      if (err) {
-        return res.status(500).json({ error: err.message || "Failed to process liquidation receipt upload." });
-      }
-      next();
-    });
-  }, async (req: Request, res) => {
-    const files = (((req as any).files || []) as Express.Multer.File[]).filter(Boolean);
-
-    if (files.length === 0) {
-      return res.status(400).json({ error: "At least one receipt image is required." });
-    }
-
-    try {
-      const preparedEvidence = await Promise.all(files.map(prepareUploadedFileForComparison));
-      const extraction = await extractLiquidationRecordsFromEvidence(preparedEvidence);
-      res.json(extraction);
-    } catch (error: any) {
-      console.error("Liquidation extraction error:", error);
-
-      if (isInvalidStructuredResponse(error)) {
-        return res.status(502).json({
-          error: "The liquidation extraction service returned incomplete structured data. Please scan the receipt again.",
-        });
-      }
-
-      if (error?.message?.includes("GEMINI_API_KEY")) {
-        return res.status(503).json({ error: "GEMINI_API_KEY is not configured. Create .env.local and restart the server." });
-      }
-
-      if (isGeminiUnavailable(error)) {
-        return res.status(503).json({ error: "Liquidation extraction is temporarily busy. Please try again in a moment." });
-      }
-
-      return res.status(500).json({ error: extractUpstreamErrorMessage(error) || "Failed to extract liquidation receipt details." });
-    } finally {
-      for (const file of files) {
-        await fs.promises.unlink(file.path).catch(() => undefined);
-      }
-    }
-  });
+    },
+    terLiquidationController.extractLiquidation,
+  );
 
   // TER travel-entry persistence is handled by PostgreSQL.
   app.use("/api/ter", terRoutes);
@@ -7934,283 +7651,25 @@ async function startServer() {
     "/api/export-accountability-form",
     "/api/intake/export-accountability-form",
     "/api/accountability-form/export",
-  ], async (req, res) => {
-    try {
-      const payload = sanitizeAccountabilityPayload(req.body as Partial<AccountabilityFormPayload>);
-      const format = getAccountabilityExportFormat((req.body as { format?: string } | undefined)?.format);
-
-      if (!payload.items.length) {
-        return res.status(400).json({ error: "At least one accountability row is required before export." });
-      }
-
-      const exportedFile = await generateAccountabilityExport(payload, format);
-
-      // Build MMDDYY prefix from effectiveDate (supports YYYY-MM-DD and MM/DD/YYYY)
-      let mmddyy = "";
-      const rawDate = payload.effectiveDate || "";
-      const isoMatch = rawDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
-      const usMatch = rawDate.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
-      const altMatch = rawDate.match(/^(\d{2})-(\d{2})-(\d{4})/);
-      if (isoMatch) {
-        mmddyy = `${isoMatch[2]}${isoMatch[3]}${isoMatch[1].slice(-2)}`;
-      } else if (usMatch) {
-        mmddyy = `${usMatch[1]}${usMatch[2]}${usMatch[3].slice(-2)}`;
-      } else if (altMatch) {
-        mmddyy = `${altMatch[1]}${altMatch[2]}${altMatch[3].slice(-2)}`;
-      } else {
-        const now = new Date();
-        const mm = String(now.getMonth() + 1).padStart(2, "0");
-        const dd = String(now.getDate()).padStart(2, "0");
-        const yy = String(now.getFullYear()).slice(-2);
-        mmddyy = `${mm}${dd}${yy}`;
-      }
-
-      const safeName = (payload.employeeName || "Unknown")
-        .trim()
-        .replace(/[/\\:*?"<>|]+/g, " ")
-        .replace(/\s{2,}/g, " ")
-        .trim() || "Unknown";
-
-      const fileNameBase = `${mmddyy} ${safeName} - New Accountability`;
-
-      res.setHeader("Content-Type", exportedFile.contentType);
-      res.setHeader("Content-Disposition", `attachment; filename="${fileNameBase}.${exportedFile.extension}"`);
-      res.send(exportedFile.buffer);
-    } catch (error: any) {
-      console.error("Accountability export error:", error);
-      res.status(500).json({
-        error: error?.message || "Failed to generate the accountability form.",
-      });
-    }
-  });
+  ], accountabilityController.exportAccountability);
 
   app.post([
     "/api/export-liquidation-form",
     "/api/liquidation/export",
     "/api/liquidation-form/export",
-  ], async (req, res) => {
-    try {
-      const payload = sanitizeLiquidationPayload(req.body as Partial<LiquidationFormPayload>);
-      const format = getLiquidationExportFormat((req.body as { format?: string } | undefined)?.format);
+  ], terLiquidationController.exportLiquidation);
 
-      if (!payload.items.length) {
-        return res.status(400).json({ error: "At least one liquidation row is required before export." });
-      }
-
-      const exportedFile = await generateLiquidationExport(payload, format);
-      const fileNameSuffix = (payload.employeeName || "liquidation-form")
-        .trim()
-        .replace(/[^a-z0-9]+/gi, "-")
-        .replace(/^-+|-+$/g, "")
-        .toLowerCase() || "liquidation-form";
-
-      res.setHeader("Content-Type", exportedFile.contentType);
-      res.setHeader("Content-Disposition", `attachment; filename="${fileNameSuffix}-liquidation-form.${exportedFile.extension}"`);
-      res.send(exportedFile.buffer);
-    } catch (error: any) {
-      console.error("Liquidation export error:", error);
-      res.status(500).json({
-        error: error?.message || "Failed to generate the liquidation form.",
-      });
-    }
-  });
-
-  // History Endpoints
-  app.get("/api/history", (req, res) => {
-    console.log(`GET /api/history - Found ${apiHistory.length} entries`);
-    res.status(200).json(apiHistory);
-  });
-
-  app.post("/api/history", (req, res) => {
-    console.log(`POST /api/history - Body:`, JSON.stringify(req.body).substring(0, 100));
-    const entry = {
-      id: Date.now(),
-      timestamp: new Date().toISOString(),
-      ...req.body
-    };
-    apiHistory.unshift(entry);
-    res.json(entry);
-  });
-
-  const deleteHistoryEntry = (req: Request, res: any) => {
-    if (!requireSuperAdmin(req, res)) return;
-
-    const id = String(req.params.id || "").trim();
-    const entryIndex = apiHistory.findIndex(entry => String(entry?.id) === id);
-
-    if (entryIndex === -1) {
-      return res.status(404).json({ error: "Form history entry not found." });
-    }
-
-    const [deleted] = apiHistory.splice(entryIndex, 1);
-    res.json({
-      success: true,
-      message: "Form deleted successfully.",
-      id: deleted?.id,
-    });
-  };
-
-  app.delete("/api/history/:id", deleteHistoryEntry);
-  app.delete("/api/forms/:id", deleteHistoryEntry);
+  // Accountability File Manager / History Endpoints
+  app.use("/api", accountabilityRoutes);
 
   // Auth Endpoints
-  app.post("/api/auth/login", (req, res) => {
-    const { employeeId, password } = req.body;
-    
-    // Check against the users array
-    const foundUser = users.find(u => u.employeeId === employeeId);
-    
-    if (foundUser && password === foundUser.password) {
-      const sessionUser = {
-        id: foundUser.id,
-        employeeId: foundUser.employeeId,
-        name: foundUser.name,
-        designation: foundUser.designation,
-        role: foundUser.role || (foundUser.designation === "Administrator" ? "SUPER_ADMIN" : "USER"),
-        photoURL: foundUser.photoURL || null,
-        mustChangePassword: foundUser.mustChangePassword,
-        uiSettings: foundUser.uiSettings,
-        profileCustomization: foundUser.profileCustomization
-      };
-      (req as any).session.user = sessionUser;
-      return res.json(sessionUser);
-    }
-    res.status(401).json({ error: "Invalid Employee ID or Password" });
-  });
-
-  app.get("/api/auth/me", (req, res) => {
-    res.json((req as any).session.user || null);
-  });
-
-  app.post("/api/auth/logout", (req, res) => {
-    (req as any).session = null;
-    res.json({ success: true });
-  });
-
-  app.post("/api/auth/change-password", (req, res) => {
-    const { employeeId, newPassword } = req.body;
-    const sessionUser = (req as any).session.user;
-    
-    // Fallback to employeeId from body if session is missing (common in iframes)
-    const targetEmployeeId = sessionUser?.employeeId || employeeId;
-    
-    if (!targetEmployeeId) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
-
-    const userIndex = users.findIndex(u => u.employeeId === targetEmployeeId);
-    
-    if (userIndex !== -1) {
-      users[userIndex].password = newPassword;
-      users[userIndex].mustChangePassword = false;
-      
-      // Update session if it exists
-      if ((req as any).session.user) {
-        (req as any).session.user.mustChangePassword = false;
-      }
-      
-      return res.json({ success: true });
-    }
-    res.status(404).json({ error: "User not found" });
-  });
-
-  app.post("/api/auth/update-user", (req, res) => {
-    const sessionUser = (req as any).session.user;
-    if (!sessionUser) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
-
-    const { photoURL, uiSettings, profileCustomization } = req.body;
-    const userIndex = users.findIndex(u => u.id === sessionUser.id);
-
-    if (userIndex !== -1) {
-      if (photoURL !== undefined) users[userIndex].photoURL = photoURL;
-      if (uiSettings !== undefined) users[userIndex].uiSettings = uiSettings;
-      if (profileCustomization !== undefined) users[userIndex].profileCustomization = profileCustomization;
-
-      // Update session
-      const updatedSessionUser = {
-        ...sessionUser,
-        photoURL: users[userIndex].photoURL,
-        uiSettings: users[userIndex].uiSettings,
-        profileCustomization: users[userIndex].profileCustomization
-      };
-      (req as any).session.user = updatedSessionUser;
-
-      return res.json(updatedSessionUser);
-    }
-    res.status(404).json({ error: "User not found" });
-  });
+  app.use("/api/auth", authRoutes);
 
   // Inventory API Endpoints
-  app.get("/api/inventory", (req, res) => {
-    res.json(inventory);
-  });
-
-  app.get("/api/inventory/:id", (req, res) => {
-    const item = inventory.find(i => i.id === req.params.id);
-    if (!item) {
-      return res.status(404).json({ error: "Inventory item not found" });
-    }
-    res.json(item);
-  });
-
-  app.post("/api/inventory", (req, res) => {
-    const dto = req.body as CreateInventoryItemDTO;
-    const newItem: InventoryItem = {
-      ...dto,
-      id: Math.random().toString(36).substring(2, 9),
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-    inventory.push(newItem);
-    res.status(201).json(newItem);
-  });
-
-  app.put("/api/inventory/:id", (req, res) => {
-    const index = inventory.findIndex(i => i.id === req.params.id);
-    if (index === -1) {
-      return res.status(404).json({ error: "Inventory item not found" });
-    }
-    const updatedItem: InventoryItem = {
-      ...inventory[index],
-      ...req.body,
-      id: inventory[index].id,
-      updatedAt: new Date()
-    };
-    inventory[index] = updatedItem;
-    res.json(updatedItem);
-  });
-
-  app.delete("/api/inventory/:id", (req, res) => {
-    const index = inventory.findIndex(i => i.id === req.params.id);
-    if (index === -1) {
-      return res.status(404).json({ error: "Inventory item not found" });
-    }
-    const [deleted] = inventory.splice(index, 1);
-    res.json({ success: true, message: "Inventory item deleted", id: deleted.id });
-  });
+  app.use("/api/inventory", assetRoutes);
 
   // User Registry Endpoints
-  app.get("/api/users", (req, res) => {
-    res.json(users);
-  });
-
-  app.post("/api/users", (req, res) => {
-    const newUser = req.body;
-    const index = users.findIndex(u => u.id === newUser.id);
-    if (index !== -1) {
-      users[index] = { ...users[index], ...newUser };
-    } else {
-      // New user gets default password and must change it on first login
-      users.push({
-        ...newUser,
-        password: "1234",
-        mustChangePassword: true
-      });
-    }
-    res.json({ success: true });
-  });
+  app.use("/api", managementRoutes);
 
   const NEXTCLOUD_ROOT_SEGMENT = "IICTD Asset Management Record";
   const DEFAULT_NEXTCLOUD_URL = "https://nextcloud.lbfinc.org";
@@ -8285,55 +7744,22 @@ async function startServer() {
     await client.getDirectoryContents("/");
   };
 
-  // Nextcloud Create Folder Endpoint
-  app.post("/api/create-folder", async (req, res) => {
-    const { targetPath, folderName, nextcloudUrl, nextcloudUsername, nextcloudPassword } = req.body;
-
-    if (!targetPath || !folderName) {
-      return res.status(400).json({ error: "Target path and folder name are required." });
-    }
-
-    try {
-      const normalizedTargetPath = normalizeNextcloudPath(targetPath);
-      const sanitizedFolderName = sanitizeNextcloudSegment(folderName, "Folder name");
-      const client = getWebDAVClient({
-        url: nextcloudUrl,
-        username: nextcloudUsername,
-        password: nextcloudPassword,
-      });
-      
-      // Ensure target directory exists (the parent path)
-      const parts = normalizedTargetPath.split("/").filter(Boolean);
-      let currentPath = "";
-      
-      for (const part of parts) {
-        currentPath += `/${part}`;
-        try {
-          const exists = await client.exists(currentPath);
-          if (!exists) {
-            await client.createDirectory(currentPath);
-          }
-        } catch (dirErr: any) {
-          if (dirErr.status !== 405) throw dirErr;
-        }
-      }
-
-      // Create the new folder
-      const newFolderPath = `${currentPath}/${sanitizedFolderName}`;
-      console.log(`Creating new folder: ${newFolderPath}`);
-      
-      const exists = await client.exists(newFolderPath);
-      if (exists) {
-        return res.status(400).json({ error: "Folder already exists." });
-      }
-
-      await client.createDirectory(newFolderPath);
-      res.json({ success: true, message: `Successfully created folder: ${sanitizedFolderName}` });
-    } catch (error: any) {
-      console.error("Nextcloud Create Folder Error:", error);
-      res.status(500).json({ error: error.message || "Failed to create folder on Nextcloud." });
-    }
+  const documentRepositoryController = createDocumentRepositoryController({
+    normalizeNextcloudPath,
+    sanitizeNextcloudSegment,
+    getWebDAVClient,
+    resolveNextcloudConfig,
+    verifyWebDAVConnection,
+    createWebDAVClient: createClient,
+    readFile: fs.promises.readFile,
+    unlinkFile: fs.promises.unlink,
+    getSafeFileName: path.posix.basename,
+    getFileName: path.basename,
+    getRepoMimeType,
   });
+
+  // Nextcloud Create Folder Endpoint
+  app.post("/api/create-folder", documentRepositoryController.createFolder);
 
   // Nextcloud Upload Endpoint
   app.post("/api/upload-to-nextcloud", (req, res, next) => {
@@ -8349,88 +7775,7 @@ async function startServer() {
       console.log(`[Upload] Multer finished processing. Files: ${((req as any).files || []).length}`);
       next();
     });
-  }, async (req: Request, res) => {
-    const { targetPath, nextcloudUrl, nextcloudUsername, nextcloudPassword } = req.body;
-    const files = (req as any).files as Express.Multer.File[];
-
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: "No files uploaded." });
-    }
-
-    try {
-      const normalizedTargetPath = normalizeNextcloudPath(targetPath);
-      const { url, username, password } = resolveNextcloudConfig({
-        url: nextcloudUrl,
-        username: nextcloudUsername,
-        password: nextcloudPassword,
-      });
-      const fullDavUrl = `${url}/remote.php/dav/files/${username}`;
-      console.log(`Connecting to Nextcloud WebDAV at: ${fullDavUrl}`);
-      
-      const client = createClient(fullDavUrl, {
-        username,
-        password,
-      });
-
-      // Ensure target directory exists
-      const parts = normalizedTargetPath.split("/").filter(Boolean);
-      let currentPath = "";
-      console.log(`Target path parts (trimmed): ${JSON.stringify(parts)}`);
-
-      // Verify connection first
-      try {
-        await verifyWebDAVConnection(client);
-        console.log("Nextcloud connection verified successfully.");
-      } catch (connErr: any) {
-        console.error("Nextcloud connection verification failed:", connErr);
-        throw new Error(`Failed to connect to Nextcloud: ${connErr.message}. Please check your credentials.`);
-      }
-
-      for (const part of parts) {
-        currentPath += `/${part}`;
-        try {
-          const exists = await client.exists(currentPath);
-          console.log(`Checking if path exists: ${currentPath} -> ${exists}`);
-          if (!exists) {
-            console.log(`Creating directory: ${currentPath}`);
-            await client.createDirectory(currentPath);
-          }
-        } catch (dirErr: any) {
-          // Ignore errors if directory already exists (sometimes exists() check is not perfect)
-          if (dirErr.status === 405) {
-            console.log(`Directory already exists (405): ${currentPath}`);
-          } else {
-            console.error(`Error creating directory ${currentPath}:`, dirErr);
-            throw dirErr;
-          }
-        }
-      }
-
-      // Upload each file
-      for (const file of files) {
-        const safeFileName = path.posix.basename(file.originalname);
-        const remoteFilePath = `${currentPath}/${safeFileName}`;
-        console.log(`Uploading file to: ${remoteFilePath} (${file.size} bytes)`);
-
-        const fileBuffer = await fs.promises.readFile(file.path);
-        await client.putFileContents(remoteFilePath, fileBuffer, { overwrite: true });
-        console.log(`Successfully uploaded: ${remoteFilePath}`);
-      }
-
-      res.json({ success: true, message: `Successfully uploaded ${files.length} files to ${normalizedTargetPath}` });
-    } catch (error: any) {
-      console.error("Nextcloud Upload Error:", error);
-      res.status(error?.status === 401 ? 401 : 500).json({ error: error.message || "Failed to upload to Nextcloud. Please verify your credentials and folder permissions." });
-    } finally {
-      for (const file of files || []) {
-        try {
-          await fs.promises.unlink(file.path);
-        } catch (unlinkErr) {
-          console.error("Failed to delete temp file", unlinkErr);
-        }
-      }
-    }
-  });
+  }, documentRepositoryController.uploadToNextcloud);
 
   // Global error handler - MUST be before SPA fallback
   app.use((err: any, req: Request, res: any, next: any) => {
@@ -8464,371 +7809,12 @@ async function startServer() {
   }
 
   // Proxy a single file from Nextcloud for in-app preview or direct download
-  app.post("/api/repository/file", async (req, res) => {
-    const { path: filePath, nextcloudUrl, nextcloudUsername, nextcloudPassword, download: forceDownload } = req.body || {};
-    if (!filePath) {
-      return res.status(400).json({ error: "File path is required." });
-    }
-    try {
-      const normalizedPath = normalizeNextcloudPath(String(filePath));
-      const client = getWebDAVClient({
-        url: nextcloudUrl,
-        username: nextcloudUsername,
-        password: nextcloudPassword,
-      });
-      const stat = await client.stat(normalizedPath) as any;
-      const filename = path.basename(normalizedPath);
-      const mimeType = getRepoMimeType(filename);
-      const fileSize: number = stat?.size || stat?.props?.getcontentlength || 0;
+  app.post("/api/repository/file", documentRepositoryController.repositoryFile);
 
-      res.setHeader("Content-Type", mimeType);
-      res.setHeader("Cache-Control", "no-store");
-      if (fileSize > 0) res.setHeader("Content-Length", String(fileSize));
-      if (forceDownload) {
-        res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-      } else {
-        res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-      }
+  app.post("/api/repository/browse", documentRepositoryController.browseRepository);
 
-      const fileStream = client.createReadStream(normalizedPath);
-      fileStream.on("error", (err: any) => {
-        if (!res.headersSent) res.status(500).json({ error: "Stream error: " + err.message });
-        else res.destroy();
-      });
-      fileStream.pipe(res);
-    } catch (error: any) {
-      console.error("Repository file proxy error:", error);
-      if (!res.headersSent) {
-        res.status(500).json({ error: error.message || "Failed to fetch file from repository." });
-      }
-    }
-  });
-
-  app.post("/api/repository/browse", async (req, res) => {
-    const { path: reqPath, nextcloudUrl, nextcloudUsername, nextcloudPassword } = req.body || {};
-    const requestedPath = ((reqPath as string) || "").trim() || "/IICTD Asset Management Record";
-    try {
-      const normalizedPath = normalizeNextcloudPath(requestedPath);
-      const client = getWebDAVClient({
-        url: nextcloudUrl,
-        username: nextcloudUsername,
-        password: nextcloudPassword,
-      });
-      const raw = await client.getDirectoryContents(normalizedPath) as any[];
-      const files = raw
-        .filter((item: any) => {
-          const fp: string = (item.filename || "").replace(/\/+$/, "");
-          return fp !== normalizedPath && fp !== normalizedPath.replace(/\/+$/, "");
-        })
-        .map((item: any) => ({
-          name: item.basename || "",
-          path: item.filename || "",
-          type: item.type || "file",
-          size: item.size || 0,
-          modified: item.lastmod || "",
-          mime: item.mime || "",
-        }))
-        .sort((a: any, b: any) => {
-          if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-      res.json({ path: normalizedPath, files });
-    } catch (error: any) {
-      console.error("Repository browse error:", error);
-      res.status(500).json({ error: error.message || "Failed to list repository contents." });
-    }
-  });
-
-  // ── Real-time mobile → desktop camera sync (SSE) ─────────────────────
-  //
-  // Architecture:
-  //   • Mobile   → POST /api/cam/push    (sends base64 image)
-  //   • Server   → broadcasts to all SSE listeners for same employeeId
-  //   • Desktop  → GET  /api/cam/events  (SSE stream, receives captures)
-  //   • Desktop  → GET  /api/cam/pending (polls for missed images on reconnect)
-  //
-  // Images are stored server-side by employeeId so captures taken while a
-  // desktop is offline are available the next time the same account opens.
-  // Channel is scoped by employeeId — same user on mobile + desktop.
-  // ─────────────────────────────────────────────────────────────────────
-
-  /** employeeId → Set of active SSE response objects */
-  const camSseClients = new Map<string, Set<any>>();
-
-  /** employeeId → array of recent captures (newest first) */
-  type CamCaptureEntry = {
-    eventId: string;
-    fingerprint: string; // first 128 chars of base64 payload — content-based dedup key
-    imageData: string;
-    fileName: string;
-    mimeType: string;
-    captureType: string; // "equipment" | "ticket" | ""
-    ts: number;
-  };
-
-  const camPendingStore = new Map<string, CamCaptureEntry[]>();
-  const camLoadedUsers = new Set<string>();
-  const CAM_STORE_DIR = path.join(process.cwd(), "uploads", "smart-capture");
-
-  const camUserStoragePath = (empId: string): string => {
-    const userKey = crypto.createHash("sha256").update(empId).digest("hex").slice(0, 32);
-    return path.join(CAM_STORE_DIR, `${userKey}.json`);
-  };
-
-  const normalizeCamEntry = (value: any): CamCaptureEntry | null => {
-    if (!value || typeof value !== "object") return null;
-    if (typeof value.eventId !== "string" || !value.eventId.trim()) return null;
-    if (typeof value.imageData !== "string" || !value.imageData.startsWith("data:")) return null;
-    return {
-      eventId: value.eventId.trim(),
-      fingerprint: typeof value.fingerprint === "string" && value.fingerprint.trim()
-        ? value.fingerprint.trim()
-        : camFingerprint(value.imageData),
-      imageData: value.imageData,
-      fileName: typeof value.fileName === "string" && value.fileName.trim()
-        ? value.fileName.trim()
-        : `capture-${Number(value.ts) || Date.now()}.jpg`,
-      mimeType: typeof value.mimeType === "string" && value.mimeType.trim()
-        ? value.mimeType.trim()
-        : "image/jpeg",
-      captureType: typeof value.captureType === "string" ? value.captureType.trim() : "",
-      ts: Number(value.ts) || Date.now(),
-    };
-  };
-
-  const camEnsureLoaded = async (empId: string): Promise<void> => {
-    if (camLoadedUsers.has(empId)) return;
-    camLoadedUsers.add(empId);
-    try {
-      const raw = await fs.promises.readFile(camUserStoragePath(empId), "utf8");
-      const parsed = JSON.parse(raw);
-      const diskEntries = Array.isArray(parsed?.images)
-        ? parsed.images.map(normalizeCamEntry).filter(Boolean) as CamCaptureEntry[]
-        : [];
-      const existing = camPendingStore.get(empId) ?? [];
-      const merged = [...existing, ...diskEntries]
-        .sort((left, right) => right.ts - left.ts)
-        .filter((entry, index, list) =>
-          list.findIndex(candidate =>
-            candidate.eventId === entry.eventId ||
-            candidate.fingerprint === entry.fingerprint
-          ) === index
-        );
-      if (merged.length > 0) {
-        camPendingStore.set(empId, merged);
-      }
-    } catch (error: any) {
-      if (error?.code !== "ENOENT") {
-        console.warn(`[CAM] Could not load saved captures for empId=${empId}:`, error?.message || error);
-      }
-    }
-  };
-
-  const camPersist = async (empId: string): Promise<void> => {
-    await fs.promises.mkdir(CAM_STORE_DIR, { recursive: true });
-    const filePath = camUserStoragePath(empId);
-    const tempPath = `${filePath}.tmp`;
-    const images = camPendingStore.get(empId) ?? [];
-    if (images.length === 0) {
-      await fs.promises.rm(filePath, { force: true });
-      await fs.promises.rm(tempPath, { force: true });
-      return;
-    }
-    await fs.promises.writeFile(tempPath, JSON.stringify({ images }, null, 2), "utf8");
-    await fs.promises.rename(tempPath, filePath);
-  };
-
-  const resolveCamEmployeeId = (
-    req: Request,
-    suppliedEmpId?: unknown
-  ): { empId: string; status?: number; error?: string } => {
-    const sessionEmpId = String((req as any).session?.user?.employeeId || "").trim();
-    const requestedEmpId = typeof suppliedEmpId === "string" ? suppliedEmpId.trim() : "";
-
-    if (sessionEmpId && requestedEmpId && sessionEmpId !== requestedEmpId) {
-      return { empId: "", status: 403, error: "Capture account does not match the logged-in account." };
-    }
-
-    const empId = sessionEmpId || requestedEmpId;
-    if (!empId) {
-      return { empId: "", status: 401, error: "Not authenticated" };
-    }
-
-    return { empId };
-  };
-
-  /**
-   * Derive a fingerprint from a data-URL that is unique per image content.
-   * Canvas toDataURL("image/jpeg", quality) produces identical JFIF headers,
-   * quantization tables, and Huffman tables for all images at the same quality
-   * level — the first ~1024 base64 chars are shared by every photo. Sampling
-   * those bytes causes every second capture to be treated as a duplicate.
-   * Fix: skip the common header region and sample from the actual scan data.
-   */
-  const camFingerprint = (imageData: string): string => {
-    const raw = imageData.replace(/^data:[^;]+;base64,/, "");
-    const len = raw.length;
-    const pos = Math.max(1200, Math.floor(len * 0.35));
-    return len + ":" + raw.substring(pos, pos + 180);
-  };
-
-  /** Write an SSE event to every desktop listener for this user. */
-  const camBroadcast = (empId: string, payload: Record<string, unknown>): void => {
-    const clients = camSseClients.get(empId);
-    if (!clients?.size) return;
-    const msg = `data: ${JSON.stringify(payload)}\n\n`;
-    for (const clientRes of clients) {
-      try { clientRes.write(msg); } catch (_) { /* client already gone */ }
-    }
-  };
-
-  /**
-   * Add a capture to the pending store and persist it server-side.
-   * Returns false (and does NOT store) if an entry with the same content
-   * fingerprint already exists — prevents the same photo from being pushed
-   * multiple times (e.g. offline-queue retry race conditions).
-   */
-  const camStorePending = async (empId: string, entry: CamCaptureEntry): Promise<boolean> => {
-    await camEnsureLoaded(empId);
-    const existing = camPendingStore.get(empId) ?? [];
-    if (existing.some(e => e.eventId === entry.eventId || e.fingerprint === entry.fingerprint)) return false; // duplicate image
-    camPendingStore.set(empId, [entry, ...existing].sort((left, right) => right.ts - left.ts));
-    await camPersist(empId);
-    return true;
-  };
-
-  // Desktop opens this SSE stream to receive live camera captures from mobile.
-  app.get("/api/cam/events", (req: Request, res: any) => {
-    // Accept empId from session (preferred) or explicit query param (fallback for HTTP where
-    // Secure cookies are not forwarded).  The client always sends the empId it received from
-    // the login response, so this is safe for this internal single-org deployment.
-    const resolved = resolveCamEmployeeId(req, (req.query as any).empId);
-    if (!resolved.empId) {
-      return res.status(resolved.status ?? 401).json({ error: resolved.error || "Not authenticated" });
-    }
-    const empId = resolved.empId;
-
-    // Override the middleware-set application/json content-type BEFORE flush.
-    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no"); // prevent nginx from buffering SSE
-    res.flushHeaders();
-
-    // Confirm connection to the client.
-    res.write(`data: ${JSON.stringify({ type: "connected", empId, ts: Date.now() })}\n\n`);
-
-    // Register this desktop client.
-    if (!camSseClients.has(empId)) camSseClients.set(empId, new Set());
-    camSseClients.get(empId)!.add(res);
-    console.log(`[CAM] Desktop SSE connected — empId=${empId} clients=${camSseClients.get(empId)!.size}`);
-
-    // Keep-alive ping every 25 s (browsers close idle SSE after ~30 s).
-    const ping = setInterval(() => {
-      try { res.write(`data: ${JSON.stringify({ type: "ping", ts: Date.now() })}\n\n`); }
-      catch (_) { /* already closed */ }
-    }, 25_000);
-
-    // Cleanup on disconnect.
-    req.on("close", () => {
-      clearInterval(ping);
-      const set = camSseClients.get(empId);
-      set?.delete(res);
-      if (!set?.size) camSseClients.delete(empId);
-      console.log(`[CAM] Desktop SSE disconnected — empId=${empId}`);
-    });
-  });
-
-  // Mobile posts a captured image here; server broadcasts it to all desktops.
-  app.post("/api/cam/push", async (req: Request, res: any) => {
-    const body = req.body as Record<string, string>;
-    const resolved = resolveCamEmployeeId(req, body.empId);
-    if (!resolved.empId) {
-      return res.status(resolved.status ?? 401).json({ error: resolved.error || "Not authenticated" });
-    }
-    const empId = resolved.empId;
-
-    const { imageData, fileName, mimeType, captureType } = body;
-
-    if (typeof imageData !== "string" || !imageData.startsWith("data:")) {
-      return res.status(400).json({ error: "imageData must be a base64 data URL." });
-    }
-
-    const fingerprint = camFingerprint(imageData);
-    const eventId     = crypto.randomUUID();
-    const entry = {
-      eventId,
-      fingerprint,
-      imageData,
-      fileName: (typeof fileName === "string" && fileName.trim())
-        ? fileName.trim()
-        : `capture-${Date.now()}.jpg`,
-      mimeType: (typeof mimeType === "string" && mimeType.trim())
-        ? mimeType.trim()
-        : "image/jpeg",
-      captureType: (typeof captureType === "string" && captureType.trim())
-        ? captureType.trim()
-        : "",
-      ts: Date.now(),
-    };
-
-    try {
-      const stored = await camStorePending(empId, entry);
-      if (!stored) {
-        // Same photo content already in the pending store — return the existing eventId
-        const existing = (camPendingStore.get(empId) ?? []).find(e => e.fingerprint === fingerprint);
-        console.log(`[CAM] Duplicate push rejected — empId=${empId} fingerprint=${fingerprint.substring(0,20)}…`);
-        return res.json({ success: true, eventId: existing?.eventId ?? eventId, duplicate: true });
-      }
-
-      camBroadcast(empId, { type: "capture", ...entry });
-      console.log(`[CAM] Push from mobile — empId=${empId} eventId=${eventId} file=${entry.fileName}`);
-      res.json({ success: true, eventId });
-    } catch (error: any) {
-      console.error(`[CAM] Failed to save capture — empId=${empId}:`, error?.message || error);
-      res.status(500).json({ error: "Failed to save captured image." });
-    }
-  });
-
-  // Desktop polls this endpoint to fetch images it missed while disconnected.
-  app.get("/api/cam/pending", async (req: Request, res: any) => {
-    const resolved = resolveCamEmployeeId(req, (req.query as any).empId);
-    if (!resolved.empId) {
-      return res.status(resolved.status ?? 401).json({ error: resolved.error || "Not authenticated" });
-    }
-    const empId = resolved.empId;
-    try {
-      await camEnsureLoaded(empId);
-      const since = Number((req.query as any).since) || 0;
-      const images = (camPendingStore.get(empId) ?? []).filter(e => e.ts > since);
-      res.json({ images });
-    } catch (error: any) {
-      console.error(`[CAM] Failed to load captures — empId=${empId}:`, error?.message || error);
-      res.status(500).json({ error: "Failed to load captured images." });
-    }
-  });
-
-  app.delete("/api/cam/pending/:eventId", async (req: Request, res: any) => {
-    const resolved = resolveCamEmployeeId(req, (req.query as any).empId);
-    if (!resolved.empId) {
-      return res.status(resolved.status ?? 401).json({ error: resolved.error || "Not authenticated" });
-    }
-
-    const empId = resolved.empId;
-    try {
-      await camEnsureLoaded(empId);
-      const eventId = String(req.params.eventId || "").trim();
-      const existing = camPendingStore.get(empId) ?? [];
-      const next = existing.filter(entry => entry.eventId !== eventId);
-      camPendingStore.set(empId, next);
-      await camPersist(empId);
-      res.json({ success: true, deleted: next.length !== existing.length });
-    } catch (error: any) {
-      console.error(`[CAM] Failed to delete capture — empId=${empId}:`, error?.message || error);
-      res.status(500).json({ error: "Failed to delete captured image." });
-    }
-  });
-  // ── End camera sync ────────────────────────────────────────────────────
+  // Real-time mobile → desktop camera sync (SSE)
+  app.use("/api/cam", cameraSyncRoutes);
 
   // 404 for API routes - MUST be before SPA fallback
   app.all("/api/*", (req, res) => {

@@ -1,4 +1,67 @@
 import type { Request, Response } from "express";
+
+type CompareSourceFile = {
+  name: string;
+  kind: "excel" | "pdf" | "image";
+  contentType: "text" | "inlineData";
+  content: string;
+  mimeType: string;
+};
+
+type LiquidationRecord = {
+  sourceName: string;
+  transactionDate: string;
+  time: string;
+  from: string;
+  to: string;
+  modeOfTransportation: string;
+  amount: string;
+  perDiem: string;
+  breakfast: string;
+  lunch: string;
+  dinner: string;
+  others: string;
+  remarks: string;
+  notes?: string;
+};
+
+type LiquidationExtractionSummary = {
+  requested: number;
+  extracted: number;
+  manual: number;
+  usedFallback: boolean;
+  message?: string;
+};
+
+type LiquidationExtractionResponse = {
+  records: LiquidationRecord[];
+  summary: LiquidationExtractionSummary;
+};
+
+
+type LiquidationFormPayload = {
+  employeeName: string;
+  reportDate: string;
+  designation: string;
+  base: string;
+  purpose: string;
+  cashAdvance: string;
+  preparedByName: string;
+  preparedByTitle: string;
+  checkedByName: string;
+  checkedByTitle: string;
+  reviewedByName: string;
+  reviewedByTitle: string;
+  notedByName: string;
+  notedByTitle: string;
+  approvedByName: string;
+  approvedByTitle: string;
+  items: LiquidationRecord[];
+  preparedBySignature?: string;
+};
+
+type LiquidationExportFormat = "xlsx" | "pdf";
+
 import {
   getTravelEntries,
   upsertTravelEntry,
@@ -200,4 +263,146 @@ export async function loadTerTravelEntries(
         "Failed to load TER travel entries.",
     });
   }
+}
+
+export type TerLiquidationControllerDependencies = {
+  prepareUploadedFileForComparison: (
+    file: Express.Multer.File,
+  ) => Promise<CompareSourceFile>;
+  extractLiquidationRecordsFromEvidence: (
+    evidenceFiles: CompareSourceFile[],
+  ) => Promise<LiquidationExtractionResponse>;
+  isInvalidStructuredResponse: (error: unknown) => boolean;
+  isGeminiUnavailable: (error: any) => boolean;
+  extractUpstreamErrorMessage: (error: any) => string;
+  sanitizeLiquidationPayload: (
+    payload: Partial<LiquidationFormPayload> | undefined,
+  ) => LiquidationFormPayload;
+  getLiquidationExportFormat: (
+    value: unknown,
+  ) => LiquidationExportFormat;
+  generateLiquidationExport: (
+    payload: LiquidationFormPayload,
+    format: LiquidationExportFormat,
+  ) => Promise<{
+    buffer: Buffer;
+    contentType: string;
+    extension: LiquidationExportFormat;
+  }>;
+};
+
+export function createTerLiquidationController(
+  dependencies: TerLiquidationControllerDependencies,
+) {
+  const {
+    prepareUploadedFileForComparison,
+    extractLiquidationRecordsFromEvidence,
+    isInvalidStructuredResponse,
+    isGeminiUnavailable,
+    extractUpstreamErrorMessage,
+    sanitizeLiquidationPayload,
+    getLiquidationExportFormat,
+    generateLiquidationExport,
+  } = dependencies;
+
+  const extractLiquidation = async (req: Request, res: Response) => {
+    const files = (((req as any).files || []) as Express.Multer.File[])
+      .filter(Boolean);
+
+    if (files.length === 0) {
+      return res.status(400).json({
+        error: "At least one receipt image is required.",
+      });
+    }
+
+    try {
+      const preparedEvidence = await Promise.all(
+        files.map(prepareUploadedFileForComparison),
+      );
+      const extraction =
+        await extractLiquidationRecordsFromEvidence(preparedEvidence);
+
+      return res.json(extraction);
+    } catch (error: any) {
+      console.error("Liquidation extraction error:", error);
+
+      if (isInvalidStructuredResponse(error)) {
+        return res.status(502).json({
+          error:
+            "The liquidation extraction service returned incomplete structured data. Please scan the receipt again.",
+        });
+      }
+
+      if (error?.message?.includes("GEMINI_API_KEY")) {
+        return res.status(503).json({
+          error:
+            "GEMINI_API_KEY is not configured. Create .env.local and restart the server.",
+        });
+      }
+
+      if (isGeminiUnavailable(error)) {
+        return res.status(503).json({
+          error:
+            "Liquidation extraction is temporarily busy. Please try again in a moment.",
+        });
+      }
+
+      return res.status(500).json({
+        error:
+          extractUpstreamErrorMessage(error) ||
+          "Failed to extract liquidation receipt details.",
+      });
+    } finally {
+      const { promises } = await import("node:fs");
+      for (const file of files) {
+        await promises.unlink(file.path).catch(() => undefined);
+      }
+    }
+  };
+
+  const exportLiquidation = async (req: Request, res: Response) => {
+    try {
+      const payload = sanitizeLiquidationPayload(
+        req.body as Partial<LiquidationFormPayload>,
+      );
+      const format = getLiquidationExportFormat(
+        (req.body as { format?: string } | undefined)?.format,
+      );
+
+      if (!payload.items.length) {
+        return res.status(400).json({
+          error: "At least one liquidation row is required before export.",
+        });
+      }
+
+      const exportedFile = await generateLiquidationExport(payload, format);
+
+      const fileNameSuffix = (payload.employeeName || "liquidation-form")
+        .trim()
+        .replace(/[^a-z0-9]+/gi, "-")
+        .replace(/^-+|-+$/g, "")
+        .toLowerCase() || "liquidation-form";
+
+      res.setHeader("Content-Type", exportedFile.contentType);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${fileNameSuffix}-liquidation-form.${exportedFile.extension}"`,
+      );
+
+      return res.send(exportedFile.buffer);
+    } catch (error: any) {
+      console.error("Liquidation export error:", error);
+
+      return res.status(500).json({
+        error:
+          error?.message ||
+          "Failed to generate the liquidation form.",
+      });
+    }
+  };
+
+  return {
+    extractLiquidation,
+    exportLiquidation,
+  };
 }

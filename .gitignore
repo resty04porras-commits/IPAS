@@ -90,3 +90,7 @@ out/
 # Legacy / separate Python edition - keep local for now
 ipas-python/
 .claude/
+
+# Local pre-refactor safety copies
+*.before-*
+camera-sync-original*.txt
