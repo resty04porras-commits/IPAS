@@ -1,74 +1,131 @@
 import type { Request, Response } from "express";
-import type { InventoryItem, CreateInventoryItemDTO } from "../inventory.js";
+import type { CreateInventoryItemDTO } from "../inventory.js";
+import {
+  createInventoryItem as createInventoryItemInRepository,
+  deleteInventoryItem as deleteInventoryItemFromRepository,
+  findInventoryItemById,
+  getInventoryItems,
+  updateInventoryItem as updateInventoryItemInRepository,
+} from "../database/repositories/assetRepository.js";
 
-/**
- * Temporary in-memory asset store.
- *
- * This intentionally preserves the current IPAS inventory behavior.
- * PostgreSQL persistence will be introduced during the database migration phase.
- */
-const inventory: InventoryItem[] = [];
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function getInventory(_req: Request, res: Response) {
-  return res.json(inventory);
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_PATTERN.test(value.trim());
 }
 
-export function getInventoryItem(req: Request, res: Response) {
-  const item = inventory.find((entry) => entry.id === req.params.id);
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: string }).code === "23505"
+  );
+}
 
-  if (!item) {
-    return res.status(404).json({ error: "Inventory item not found" });
+export async function getInventory(_req: Request, res: Response) {
+  try {
+    const inventory = await getInventoryItems();
+    return res.json(inventory);
+  } catch (error) {
+    console.error("Inventory get all error:", error);
+    return res.status(500).json({ error: "Unable to load inventory." });
   }
-
-  return res.json(item);
 }
 
-export function createInventoryItem(req: Request, res: Response) {
-  const dto = req.body as CreateInventoryItemDTO;
+export async function getInventoryItem(req: Request, res: Response) {
+  try {
+     if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: "Inventory item not found" });
+    }
+    const item = await findInventoryItemById(req.params.id);
 
-  const newItem: InventoryItem = {
-    ...dto,
-    id: Math.random().toString(36).substring(2, 9),
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
+    if (!item) {
+      return res.status(404).json({ error: "Inventory item not found" });
+    }
 
-  inventory.push(newItem);
-
-  return res.status(201).json(newItem);
-}
-
-export function updateInventoryItem(req: Request, res: Response) {
-  const index = inventory.findIndex((entry) => entry.id === req.params.id);
-
-  if (index === -1) {
-    return res.status(404).json({ error: "Inventory item not found" });
+    return res.json(item);
+  } catch (error) {
+    console.error("Inventory get item error:", error);
+    return res.status(500).json({ error: "Unable to load inventory item." });
   }
-
-  const updatedItem: InventoryItem = {
-    ...inventory[index],
-    ...req.body,
-    id: inventory[index].id,
-    updatedAt: new Date(),
-  };
-
-  inventory[index] = updatedItem;
-
-  return res.json(updatedItem);
 }
 
-export function deleteInventoryItem(req: Request, res: Response) {
-  const index = inventory.findIndex((entry) => entry.id === req.params.id);
+export async function createInventoryItem(req: Request, res: Response) {
+  try {
+    const dto = req.body as CreateInventoryItemDTO;
 
-  if (index === -1) {
-    return res.status(404).json({ error: "Inventory item not found" });
+    if (!dto?.sku?.trim()) {
+      return res.status(400).json({ error: "SKU is required." });
+    }
+
+    if (!dto?.name?.trim()) {
+      return res.status(400).json({ error: "Name is required." });
+    }
+
+    if (!dto?.category?.trim()) {
+      return res.status(400).json({ error: "Category is required." });
+    }
+
+    const newItem = await createInventoryItemInRepository(dto);
+
+    return res.status(201).json(newItem);
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return res.status(409).json({ error: "SKU already exists." });
+    }
+
+    console.error("Inventory create error:", error);
+    return res.status(500).json({ error: "Unable to create inventory item." });
   }
+}
 
-  const [deleted] = inventory.splice(index, 1);
+export async function updateInventoryItem(req: Request, res: Response) {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: "Inventory item not found" });
+    }
 
-  return res.json({
-    success: true,
-    message: "Inventory item deleted",
-    id: deleted.id,
-  });
+    const updatedItem = await updateInventoryItemInRepository(
+      req.params.id,
+      req.body,
+    );
+
+    if (!updatedItem) {
+      return res.status(404).json({ error: "Inventory item not found" });
+    }
+
+    return res.json(updatedItem);
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return res.status(409).json({ error: "SKU already exists." });
+    }
+
+    console.error("Inventory update error:", error);
+    return res.status(500).json({ error: "Unable to update inventory item." });
+  }
+}
+
+export async function deleteInventoryItem(req: Request, res: Response) {
+  try {
+    if (!isUuid(req.params.id)) {
+      return res.status(404).json({ error: "Inventory item not found" });
+    }
+    
+    const deleted = await deleteInventoryItemFromRepository(req.params.id);
+
+    if (!deleted) {
+      return res.status(404).json({ error: "Inventory item not found" });
+    }
+
+    return res.json({
+      success: true,
+      message: "Inventory item deleted",
+      id: req.params.id,
+    });
+  } catch (error) {
+    console.error("Inventory delete error:", error);
+    return res.status(500).json({ error: "Unable to delete inventory item." });
+  }
 }
