@@ -7495,28 +7495,10 @@ async function startServer() {
 
   // In-memory inventory store
 
-  // In-memory user store
-  const users: any[] = [
-    {
-      id: "1",
-      employeeId: "2015-3357",
-      name: "Resty B. Porras",
-      designation: "Administrator",
-      baseOffice: "Head Office",
-      group: "Central Operation",
-      status: "Active",
-      role: "SUPER_ADMIN",
-      photoURL: null,
-      password: "1234",
-      mustChangePassword: false
-    }
-  ];
 
-  const managementController = createManagementController({
-    users,
-  });
+  const managementController = createManagementController();
   const managementRoutes = createManagementRoutes(managementController);
-  const authController = createAuthController({ users });
+  const authController = createAuthController();
   const cameraSyncController = createCameraSyncController();
   const cameraSyncRoutes = createCameraSyncRoutes(cameraSyncController);
   const authRoutes = createAuthRoutes(authController);
