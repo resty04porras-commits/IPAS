@@ -7793,6 +7793,32 @@ async function startServer() {
   // Proxy a single file from Nextcloud for in-app preview or direct download
   app.post("/api/repository/file", documentRepositoryController.repositoryFile);
 
+  // Document Repository — PostgreSQL metadata
+  app.get(
+    "/api/repository/documents",
+    documentRepositoryController.listDocumentRecords,
+  );
+
+  app.get(
+    "/api/repository/documents/:id",
+    documentRepositoryController.getDocumentRecord,
+  );
+
+  app.post(
+    "/api/repository/documents",
+    documentRepositoryController.createDocumentRecord,
+  );
+
+  app.put(
+    "/api/repository/documents/:id",
+    documentRepositoryController.updateDocumentRecord,
+  );
+
+  app.delete(
+    "/api/repository/documents/:id",
+    documentRepositoryController.deleteDocumentRecord,
+  );
+
   app.post("/api/repository/browse", documentRepositoryController.browseRepository);
 
   // Real-time mobile → desktop camera sync (SSE)

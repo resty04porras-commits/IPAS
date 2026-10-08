@@ -1,4 +1,11 @@
 import type { Request, Response } from "express";
+import {
+  createDocument,
+  deleteDocument,
+  getDocumentById,
+  getDocuments,
+  updateDocument,
+} from "../database/repositories/documentRepository.js";
 
 export type DocumentRepositoryControllerDependencies = {
   normalizeNextcloudPath: (targetPath: string) => string;
@@ -45,6 +52,207 @@ export function createDocumentRepositoryController(
     getFileName,
     getRepoMimeType,
   } = dependencies;
+  const listDocumentRecords = async (_req: Request, res: Response) => {
+    try {
+      const documents = await getDocuments();
+      return res.json(documents);
+    } catch (error: any) {
+      console.error("Document list error:", error);
+      return res.status(500).json({
+        error: error.message || "Failed to retrieve documents.",
+      });
+    }
+  };
+
+  const getDocumentRecord = async (req: Request, res: Response) => {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({
+        error: "Document ID is required.",
+      });
+    }
+
+    try {
+      const document = await getDocumentById(id);
+
+      if (!document) {
+        return res.status(404).json({
+          error: "Document not found.",
+        });
+      }
+
+      return res.json(document);
+    } catch (error: any) {
+      console.error("Document retrieval error:", error);
+
+      if (error?.code === "22P02") {
+        return res.status(400).json({
+          error: "Invalid document ID.",
+        });
+      }
+
+      return res.status(500).json({
+        error: error.message || "Failed to retrieve document.",
+      });
+    }
+  };
+
+  const createDocumentRecord = async (req: Request, res: Response) => {
+    const sessionUser = (req as any).session?.user;
+    const originalFilename = String(
+      req.body?.originalFilename ?? "",
+    ).trim();
+
+    if (!sessionUser?.id) {
+      return res.status(401).json({
+        error: "Authentication required.",
+      });
+    }
+
+    if (!originalFilename) {
+      return res.status(400).json({
+        error: "Original filename is required.",
+      });
+    }
+
+    try {
+      const document = await createDocument({
+        ...req.body,
+        originalFilename,
+        uploadedBy: sessionUser.id,
+      });
+
+      return res.status(201).json(document);
+    } catch (error: any) {
+      console.error("Document create error:", error);
+
+      if (error?.code === "22P02") {
+        return res.status(400).json({
+          error: "Invalid UUID value.",
+        });
+      }
+
+      if (error?.code === "23503") {
+        return res.status(400).json({
+          error:
+            "Referenced accountability form, travel report, or user does not exist.",
+        });
+      }
+
+      return res.status(500).json({
+        error: error.message || "Failed to create document.",
+      });
+    }
+  };
+
+  const updateDocumentRecord = async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const sessionUser = (req as any).session?.user;
+    const originalFilename = String(
+      req.body?.originalFilename ?? "",
+    ).trim();
+
+    if (!sessionUser?.id) {
+      return res.status(401).json({
+        error: "Authentication required.",
+      });
+    }
+
+    if (!id) {
+      return res.status(400).json({
+        error: "Document ID is required.",
+      });
+    }
+
+    if (!originalFilename) {
+      return res.status(400).json({
+        error: "Original filename is required.",
+      });
+    }
+
+    try {
+      const existing = await getDocumentById(id);
+
+      if (!existing) {
+        return res.status(404).json({
+          error: "Document not found.",
+        });
+      }
+
+      const document = await updateDocument(id, {
+        ...req.body,
+        originalFilename,
+        uploadedBy: existing.uploadedBy,
+      });
+
+      return res.json(document);
+    } catch (error: any) {
+      console.error("Document update error:", error);
+
+      if (error?.code === "22P02") {
+        return res.status(400).json({
+          error: "Invalid UUID value.",
+        });
+      }
+
+      if (error?.code === "23503") {
+        return res.status(400).json({
+          error:
+            "Referenced accountability form, travel report, or user does not exist.",
+        });
+      }
+
+      return res.status(500).json({
+        error: error.message || "Failed to update document.",
+      });
+    }
+  };
+
+  const deleteDocumentRecord = async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const sessionUser = (req as any).session?.user;
+
+    if (!sessionUser?.id) {
+      return res.status(401).json({
+        error: "Authentication required.",
+      });
+    }
+
+    if (!id) {
+      return res.status(400).json({
+        error: "Document ID is required.",
+      });
+    }
+
+    try {
+      const deleted = await deleteDocument(id);
+
+      if (!deleted) {
+        return res.status(404).json({
+          error: "Document not found.",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Document record deleted.",
+        id: deleted.id,
+      });
+    } catch (error: any) {
+      console.error("Document delete error:", error);
+
+      if (error?.code === "22P02") {
+        return res.status(400).json({
+          error: "Invalid document ID.",
+        });
+      }
+
+      return res.status(500).json({
+        error: error.message || "Failed to delete document.",
+      });
+    }
+  };
 
   const createFolder = async (req: Request, res: Response) => {
     const {
@@ -354,6 +562,11 @@ export function createDocumentRepositoryController(
   };
 
   return {
+    listDocumentRecords,
+    getDocumentRecord,
+    createDocumentRecord,
+    updateDocumentRecord,
+    deleteDocumentRecord,
     createFolder,
     uploadToNextcloud,
     repositoryFile,
