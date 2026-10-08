@@ -6,5 +6,12 @@ export function createManagementRoutes(controller: any) {
   router.get("/users", controller.getUsers);
   router.post("/users", controller.saveUser);
 
+  router.get("/roles", controller.getRoles);
+  router.get("/permissions", controller.getPermissions);
+  router.get(
+    "/role-permissions",
+    controller.getRolesWithPermissions,
+  );
+
   return router;
 }

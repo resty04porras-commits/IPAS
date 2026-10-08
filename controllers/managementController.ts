@@ -7,6 +7,12 @@ import {
   type UserInput,
 } from "../database/repositories/userRepository.js";
 
+import {
+  getPermissions as getPermissionsFromRepository,
+  getRoles as getRolesFromRepository,
+  getRolesWithPermissions as getRolesWithPermissionsFromRepository,
+} from "../database/repositories/permissionRepository.js";
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -120,9 +126,59 @@ export function createManagementController() {
       });
     }
   };
+  const getRoles = async (_req: Request, res: Response) => {
+    try {
+      const roles = await getRolesFromRepository();
+      return res.json(roles);
+    } catch (error) {
+      console.error("Management get roles error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Unable to load roles.",
+      });
+    }
+  };
 
-  return {
+  const getPermissions = async (_req: Request, res: Response) => {
+    try {
+      const permissions = await getPermissionsFromRepository();
+      return res.json(permissions);
+    } catch (error) {
+      console.error("Management get permissions error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Unable to load permissions.",
+      });
+    }
+  };
+
+  const getRolesWithPermissions = async (
+    _req: Request,
+    res: Response,
+  ) => {
+    try {
+      const roles =
+        await getRolesWithPermissionsFromRepository();
+
+      return res.json(roles);
+    } catch (error) {
+      console.error(
+        "Management get role permissions error:",
+        error,
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to load role permissions.",
+      });
+    }
+  };
+
+    return {
     getUsers,
     saveUser,
+    getRoles,
+    getPermissions,
+    getRolesWithPermissions,
   };
 }
