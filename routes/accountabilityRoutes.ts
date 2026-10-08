@@ -77,6 +77,33 @@ export function createAccountabilityRoutes(
     controller.compareUpload,
   );
 
+  // Structured Accountability Forms
+  router.get(
+    "/accountability/forms",
+    controller.getAccountabilityFormList,
+  );
+
+  router.get(
+    "/accountability/forms/:id",
+    controller.getAccountabilityForm,
+  );
+
+  router.post(
+    "/accountability/forms",
+    controller.createAccountabilityFormRecord,
+  );
+
+  router.put(
+    "/accountability/forms/:id",
+    controller.updateAccountabilityFormRecord,
+  );
+
+  router.delete(
+    "/accountability/forms/:id",
+    controller.deleteAccountabilityFormRecord,
+  );
+
+
   // File Manager / Accountability history
   router.get("/history", controller.getHistory);
   router.post("/history", controller.createHistory);

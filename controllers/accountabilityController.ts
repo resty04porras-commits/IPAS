@@ -1,5 +1,12 @@
 import type { Request, Response } from "express";
 import type { Multer } from "multer";
+import {
+  createAccountabilityForm,
+  deleteAccountabilityForm,
+  getAccountabilityFormById,
+  getAccountabilityForms,
+  updateAccountabilityForm,
+} from "../database/repositories/accountabilityRepository.js";
 
 type CompareSourceFile = {
   name: string;
@@ -191,6 +198,226 @@ export function createAccountabilityController(
     getAccountabilityExportFormat,
     generateAccountabilityExport,
   } = dependencies;
+
+  const getAccountabilityFormList = async (
+    _req: Request,
+    res: Response,
+  ) => {
+    try {
+      const forms = await getAccountabilityForms();
+      return res.status(200).json(forms);
+    } catch (error: any) {
+      console.error("Get accountability forms error:", error);
+      return res.status(500).json({
+        error: "Failed to load accountability forms.",
+      });
+    }
+  };
+
+  const getAccountabilityForm = async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const id = String(req.params.id ?? "").trim();
+
+      if (!id) {
+        return res.status(400).json({
+          error: "Accountability form id is required.",
+        });
+      }
+
+      const form = await getAccountabilityFormById(id);
+
+      if (!form) {
+        return res.status(404).json({
+          error: "Accountability form not found.",
+        });
+      }
+
+      return res.status(200).json(form);
+    } catch (error: any) {
+      console.error("Get accountability form error:", error);
+
+      if (error?.code === "22P02") {
+        return res.status(400).json({
+          error: "Invalid accountability form id.",
+        });
+      }
+
+      return res.status(500).json({
+        error: "Failed to load accountability form.",
+      });
+    }
+  };
+
+  const createAccountabilityFormRecord = async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const sessionUser = (req as any).session?.user;
+
+      if (!sessionUser?.id) {
+        return res.status(401).json({
+          error: "Authentication required.",
+        });
+      }
+
+      const employeeName = String(
+        req.body?.employeeName ?? "",
+      ).trim();
+
+      if (!employeeName) {
+        return res.status(400).json({
+          error: "Employee name is required.",
+        });
+      }
+
+      const created = await createAccountabilityForm({
+        ...req.body,
+        employeeName,
+        createdBy: sessionUser.id,
+      });
+
+      return res.status(201).json(created);
+    } catch (error: any) {
+      console.error("Create accountability form error:", error);
+
+      if (error?.code === "22P02") {
+        return res.status(400).json({
+          error: "Invalid UUID value.",
+        });
+      }
+
+      if (error?.code === "23503") {
+        return res.status(400).json({
+          error: "Referenced user or asset does not exist.",
+        });
+      }
+
+      return res.status(500).json({
+        error:
+          error?.message ||
+          "Failed to create accountability form.",
+      });
+    }
+  };
+
+  const updateAccountabilityFormRecord = async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const sessionUser = (req as any).session?.user;
+
+      if (!sessionUser?.id) {
+        return res.status(401).json({
+          error: "Authentication required.",
+        });
+      }
+
+      const id = String(req.params.id ?? "").trim();
+
+      if (!id) {
+        return res.status(400).json({
+          error: "Accountability form id is required.",
+        });
+      }
+
+      const employeeName = String(
+        req.body?.employeeName ?? "",
+      ).trim();
+
+      if (!employeeName) {
+        return res.status(400).json({
+          error: "Employee name is required.",
+        });
+      }
+
+      const updated = await updateAccountabilityForm(id, {
+        ...req.body,
+        employeeName,
+      });
+
+      if (!updated) {
+        return res.status(404).json({
+          error: "Accountability form not found.",
+        });
+      }
+
+      return res.status(200).json(updated);
+    } catch (error: any) {
+      console.error("Update accountability form error:", error);
+
+      if (error?.code === "22P02") {
+        return res.status(400).json({
+          error: "Invalid UUID value.",
+        });
+      }
+
+      if (error?.code === "23503") {
+        return res.status(400).json({
+          error: "Referenced asset does not exist.",
+        });
+      }
+
+      return res.status(500).json({
+        error:
+          error?.message ||
+          "Failed to update accountability form.",
+      });
+    }
+  };
+
+  const deleteAccountabilityFormRecord = async (
+    req: Request,
+    res: Response,
+  ) => {
+    try {
+      const sessionUser = (req as any).session?.user;
+
+      if (!sessionUser?.id) {
+        return res.status(401).json({
+          error: "Authentication required.",
+        });
+      }
+
+      const id = String(req.params.id ?? "").trim();
+
+      if (!id) {
+        return res.status(400).json({
+          error: "Accountability form id is required.",
+        });
+      }
+
+      const deleted = await deleteAccountabilityForm(id);
+
+      if (!deleted) {
+        return res.status(404).json({
+          error: "Accountability form not found.",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Accountability form deleted successfully.",
+        id: deleted.id,
+      });
+    } catch (error: any) {
+      console.error("Delete accountability form error:", error);
+
+      if (error?.code === "22P02") {
+        return res.status(400).json({
+          error: "Invalid accountability form id.",
+        });
+      }
+
+      return res.status(500).json({
+        error: "Failed to delete accountability form.",
+      });
+    }
+  };
 
   const getHistory = (_req: Request, res: Response) => {
     console.log(`GET /api/history - Found ${apiHistory.length} entries`);
@@ -766,6 +993,11 @@ export function createAccountabilityController(
 
   return {
     upload,
+    getAccountabilityFormList,
+    getAccountabilityForm,
+    createAccountabilityFormRecord,
+    updateAccountabilityFormRecord,
+    deleteAccountabilityFormRecord,
     getHistory,
     createHistory,
     deleteHistory,
