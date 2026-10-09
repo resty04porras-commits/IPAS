@@ -13,5 +13,7 @@ export function createManagementRoutes(controller: any) {
     controller.getRolesWithPermissions,
   );
 
+  router.get("/audit-logs", controller.getAuditLogs);
+
   return router;
 }

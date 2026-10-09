@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+
 import {
   createUser,
   findUserById,
@@ -12,6 +13,10 @@ import {
   getRoles as getRolesFromRepository,
   getRolesWithPermissions as getRolesWithPermissionsFromRepository,
 } from "../database/repositories/permissionRepository.js";
+
+import {
+  getAuditLogs as getAuditLogsFromRepository,
+} from "../database/repositories/auditRepository.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -61,6 +66,7 @@ export function createManagementController() {
       return res.json(users);
     } catch (error) {
       console.error("Management get users error:", error);
+
       return res.status(500).json({
         success: false,
         message: "Unable to load users.",
@@ -126,12 +132,14 @@ export function createManagementController() {
       });
     }
   };
+
   const getRoles = async (_req: Request, res: Response) => {
     try {
       const roles = await getRolesFromRepository();
       return res.json(roles);
     } catch (error) {
       console.error("Management get roles error:", error);
+
       return res.status(500).json({
         success: false,
         message: "Unable to load roles.",
@@ -145,6 +153,7 @@ export function createManagementController() {
       return res.json(permissions);
     } catch (error) {
       console.error("Management get permissions error:", error);
+
       return res.status(500).json({
         success: false,
         message: "Unable to load permissions.",
@@ -174,11 +183,62 @@ export function createManagementController() {
     }
   };
 
-    return {
+  const getAuditLogs = async (req: Request, res: Response) => {
+    try {
+      const logs = await getAuditLogsFromRepository({
+        userId:
+          typeof req.query.userId === "string"
+            ? req.query.userId
+            : undefined,
+
+        employeeId:
+          typeof req.query.employeeId === "string"
+            ? req.query.employeeId
+            : undefined,
+
+        action:
+          typeof req.query.action === "string"
+            ? req.query.action
+            : undefined,
+
+        entityType:
+          typeof req.query.entityType === "string"
+            ? req.query.entityType
+            : undefined,
+
+        entityId:
+          typeof req.query.entityId === "string"
+            ? req.query.entityId
+            : undefined,
+
+        limit:
+          typeof req.query.limit === "string"
+            ? Number(req.query.limit)
+            : undefined,
+
+        offset:
+          typeof req.query.offset === "string"
+            ? Number(req.query.offset)
+            : undefined,
+      });
+
+      return res.json(logs);
+    } catch (error) {
+      console.error("Management get audit logs error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to load audit logs.",
+      });
+    }
+  };
+
+  return {
     getUsers,
     saveUser,
     getRoles,
     getPermissions,
     getRolesWithPermissions,
+    getAuditLogs,
   };
 }
