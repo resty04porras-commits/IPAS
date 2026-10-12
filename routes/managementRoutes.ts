@@ -5,6 +5,8 @@ export function createManagementRoutes(controller: any) {
 
   router.get("/users", controller.getUsers);
   router.post("/users", controller.saveUser);
+  router.delete("/users/:id", controller.deactivateUser);
+  router.patch("/users/:id/activate", controller.activateUser);
 
   router.get("/roles", controller.getRoles);
   router.get("/permissions", controller.getPermissions);

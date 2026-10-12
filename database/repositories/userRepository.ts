@@ -296,6 +296,46 @@ export async function updateUser(input: UserInput) {
   return findPublicUserById(result.rows[0].id);
 }
 
+export async function deactivateUser(id: string) {
+  const result = await db.query(
+    `
+      UPDATE users
+      SET
+        status = 'Inactive',
+        updated_at = NOW()
+      WHERE id = $1::uuid
+      RETURNING id
+    `,
+    [id.trim()],
+  );
+
+  if (!result.rowCount) {
+    return null;
+  }
+
+  return findPublicUserById(result.rows[0].id);
+}
+
+export async function activateUser(id: string) {
+  const result = await db.query(
+    `
+      UPDATE users
+      SET
+        status = 'Active',
+        updated_at = NOW()
+      WHERE id = $1::uuid
+      RETURNING id
+    `,
+    [id.trim()],
+  );
+
+  if (!result.rowCount) {
+    return null;
+  }
+
+  return findPublicUserById(result.rows[0].id);
+}
+
 export async function changeUserPassword(
   employeeId: string,
   newPassword: string,

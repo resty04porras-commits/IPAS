@@ -1,7 +1,9 @@
 import type { Request, Response } from "express";
 
 import {
+  activateUser as activateUserFromRepository,
   createUser,
+  deactivateUser as deactivateUserFromRepository,
   findUserById,
   getUsers as getUsersFromRepository,
   updateUser,
@@ -17,6 +19,8 @@ import {
 import {
   getAuditLogs as getAuditLogsFromRepository,
 } from "../database/repositories/auditRepository.js";
+
+import { writeAuditLog } from "./auditHelper.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -74,7 +78,7 @@ export function createManagementController() {
     }
   };
 
-  const saveUser = async (req: Request, res: Response) => {
+    const saveUser = async (req: Request, res: Response) => {
     try {
       const input = normalizeUserInput(req.body);
 
@@ -93,12 +97,14 @@ export function createManagementController() {
       }
 
       let savedUser = null;
+      let auditAction = "USER_CREATED";
 
       if (isUuid(input.id)) {
         const existingUser = await findUserById(input.id);
 
         if (existingUser) {
           savedUser = await updateUser(input);
+          auditAction = "USER_UPDATED";
         }
       }
 
@@ -110,6 +116,22 @@ export function createManagementController() {
         };
 
         savedUser = await createUser(createInput);
+        auditAction = "USER_CREATED";
+      }
+
+      if (savedUser) {
+        await writeAuditLog(req, {
+          action: auditAction,
+          entityType: "user",
+          entityId: savedUser.id,
+          details: {
+            employeeId: savedUser.employeeId,
+            name: savedUser.name,
+            designation: savedUser.designation,
+            role: savedUser.role,
+            status: savedUser.status,
+          },
+        });
       }
 
       return res.json({
@@ -133,6 +155,225 @@ export function createManagementController() {
     }
   };
 
+  const deactivateUser = async (req: Request, res: Response) => {
+    try {
+      const sessionUser = (req as any).session?.user;
+
+      if (!sessionUser) {
+        return res.status(401).json({
+          success: false,
+          message: "Not authenticated.",
+        });
+      }
+
+      const sessionRole = String(
+        sessionUser.role || "",
+      ).toUpperCase();
+
+      const sessionDesignation = String(
+        sessionUser.designation || "",
+      ).toLowerCase();
+
+      const isSuperAdmin =
+        sessionRole === "SUPER_ADMIN" ||
+        sessionDesignation === "administrator" ||
+        sessionDesignation === "system admin";
+
+      if (!isSuperAdmin) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only Super Admin users can deactivate user accounts.",
+        });
+      }
+
+      const userId = String(req.params.id ?? "").trim();
+
+      if (!isUuid(userId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid user ID.",
+        });
+      }
+
+      const existingUser = await findUserById(userId);
+
+      if (!existingUser) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found.",
+        });
+      }
+
+      if (
+        String(existingUser.status || "").toLowerCase() ===
+        "inactive"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "User account is already inactive.",
+        });
+      }
+
+      if (
+        sessionUser.id === userId ||
+        (
+          sessionUser.employeeId &&
+          existingUser.employeeId &&
+          String(sessionUser.employeeId) ===
+            String(existingUser.employeeId)
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "You cannot deactivate your own account.",
+        });
+      }
+
+      const deactivatedUser =
+        await deactivateUserFromRepository(userId);
+
+      if (!deactivatedUser) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found.",
+        });
+      }
+
+      await writeAuditLog(req, {
+        action: "USER_DEACTIVATED",
+        entityType: "user",
+        entityId: deactivatedUser.id,
+        details: {
+          employeeId: deactivatedUser.employeeId,
+          name: deactivatedUser.name,
+          designation: deactivatedUser.designation,
+          role: deactivatedUser.role,
+          previousStatus: existingUser.status,
+          newStatus: deactivatedUser.status,
+        },
+      });
+
+      return res.json({
+        success: true,
+        message: "User deactivated successfully.",
+        user: deactivatedUser,
+      });
+    } catch (error) {
+      console.error(
+        "Management deactivate user error:",
+        error,
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to deactivate user.",
+      });
+    }
+  };
+
+    const activateUser = async (req: Request, res: Response) => {
+    try {
+      const sessionUser = (req as any).session?.user;
+
+      if (!sessionUser) {
+        return res.status(401).json({
+          success: false,
+          message: "Not authenticated.",
+        });
+      }
+
+      const sessionRole = String(
+        sessionUser.role || "",
+      ).toUpperCase();
+
+      const sessionDesignation = String(
+        sessionUser.designation || "",
+      ).toLowerCase();
+
+      const isSuperAdmin =
+        sessionRole === "SUPER_ADMIN" ||
+        sessionDesignation === "administrator" ||
+        sessionDesignation === "system admin";
+
+      if (!isSuperAdmin) {
+        return res.status(403).json({
+          success: false,
+          message:
+            "Only Super Admin users can activate user accounts.",
+        });
+      }
+
+      const userId = String(req.params.id ?? "").trim();
+
+      if (!isUuid(userId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid user ID.",
+        });
+      }
+
+      const existingUser = await findUserById(userId);
+
+      if (!existingUser) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found.",
+        });
+      }
+
+      if (
+        String(existingUser.status || "").toLowerCase() ===
+        "active"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "User account is already active.",
+        });
+      }
+
+      const activatedUser =
+        await activateUserFromRepository(userId);
+
+      if (!activatedUser) {
+        return res.status(404).json({
+          success: false,
+          message: "User not found.",
+        });
+      }
+
+      await writeAuditLog(req, {
+        action: "USER_REACTIVATED",
+        entityType: "user",
+        entityId: activatedUser.id,
+        details: {
+          employeeId: activatedUser.employeeId,
+          name: activatedUser.name,
+          designation: activatedUser.designation,
+          role: activatedUser.role,
+          previousStatus: existingUser.status,
+          newStatus: activatedUser.status,
+        },
+      });
+
+      return res.json({
+        success: true,
+        message: "User activated successfully.",
+        user: activatedUser,
+      });
+    } catch (error) {
+      console.error(
+        "Management activate user error:",
+        error,
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to activate user.",
+      });
+    }
+  };
+
   const getRoles = async (_req: Request, res: Response) => {
     try {
       const roles = await getRolesFromRepository();
@@ -147,12 +388,20 @@ export function createManagementController() {
     }
   };
 
-  const getPermissions = async (_req: Request, res: Response) => {
+  const getPermissions = async (
+    _req: Request,
+    res: Response,
+  ) => {
     try {
-      const permissions = await getPermissionsFromRepository();
+      const permissions =
+        await getPermissionsFromRepository();
+
       return res.json(permissions);
     } catch (error) {
-      console.error("Management get permissions error:", error);
+      console.error(
+        "Management get permissions error:",
+        error,
+      );
 
       return res.status(500).json({
         success: false,
@@ -183,7 +432,10 @@ export function createManagementController() {
     }
   };
 
-  const getAuditLogs = async (req: Request, res: Response) => {
+  const getAuditLogs = async (
+    req: Request,
+    res: Response,
+  ) => {
     try {
       const logs = await getAuditLogsFromRepository({
         userId:
@@ -224,7 +476,10 @@ export function createManagementController() {
 
       return res.json(logs);
     } catch (error) {
-      console.error("Management get audit logs error:", error);
+      console.error(
+        "Management get audit logs error:",
+        error,
+      );
 
       return res.status(500).json({
         success: false,
@@ -233,9 +488,11 @@ export function createManagementController() {
     }
   };
 
-  return {
+    return {
     getUsers,
     saveUser,
+    deactivateUser,
+    activateUser,
     getRoles,
     getPermissions,
     getRolesWithPermissions,
