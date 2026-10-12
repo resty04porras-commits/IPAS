@@ -7,6 +7,7 @@ import {
   getInventoryItems,
   updateInventoryItem as updateInventoryItemInRepository,
 } from "../database/repositories/assetRepository.js";
+import { writeAuditLog } from "./auditHelper.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -36,7 +37,7 @@ export async function getInventory(_req: Request, res: Response) {
 
 export async function getInventoryItem(req: Request, res: Response) {
   try {
-     if (!isUuid(req.params.id)) {
+    if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: "Inventory item not found" });
     }
     const item = await findInventoryItemById(req.params.id);
@@ -70,6 +71,17 @@ export async function createInventoryItem(req: Request, res: Response) {
 
     const newItem = await createInventoryItemInRepository(dto);
 
+    await writeAuditLog(req, {
+      action: "ASSET_CREATED",
+      entityType: "asset",
+      entityId: newItem.id,
+      details: {
+        sku: newItem.sku,
+        name: newItem.name,
+        category: newItem.category,
+      },
+    });
+
     return res.status(201).json(newItem);
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -96,6 +108,17 @@ export async function updateInventoryItem(req: Request, res: Response) {
       return res.status(404).json({ error: "Inventory item not found" });
     }
 
+    await writeAuditLog(req, {
+      action: "ASSET_UPDATED",
+      entityType: "asset",
+      entityId: updatedItem.id,
+      details: {
+        sku: updatedItem.sku,
+        name: updatedItem.name,
+        category: updatedItem.category,
+      },
+    });
+
     return res.json(updatedItem);
   } catch (error) {
     if (isUniqueViolation(error)) {
@@ -112,12 +135,29 @@ export async function deleteInventoryItem(req: Request, res: Response) {
     if (!isUuid(req.params.id)) {
       return res.status(404).json({ error: "Inventory item not found" });
     }
-    
+
+    const existingItem = await findInventoryItemById(req.params.id);
+
+    if (!existingItem) {
+      return res.status(404).json({ error: "Inventory item not found" });
+    }
+
     const deleted = await deleteInventoryItemFromRepository(req.params.id);
 
     if (!deleted) {
       return res.status(404).json({ error: "Inventory item not found" });
     }
+
+    await writeAuditLog(req, {
+      action: "ASSET_DELETED",
+      entityType: "asset",
+      entityId: req.params.id,
+      details: {
+        sku: existingItem.sku,
+        name: existingItem.name,
+        category: existingItem.category,
+      },
+    });
 
     return res.json({
       success: true,
