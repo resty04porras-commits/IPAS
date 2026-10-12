@@ -6,6 +6,7 @@ import {
   updateUserProfile,
   verifyUserPassword,
 } from "../database/repositories/userRepository.js";
+import { writeAuditLog } from "./auditHelper.js";
 
 function toSessionUser(user: any) {
   return {
@@ -110,6 +111,15 @@ export function createAuthController() {
 
       (req as any).session.user.mustChangePassword = false;
 
+      await writeAuditLog(req, {
+        action: "PASSWORD_CHANGED",
+        entityType: "user",
+        entityId: sessionUser.id || null,
+        details: {
+          employeeId: sessionUser.employeeId,
+        },
+      });
+
       return res.json({ success: true });
     } catch (error) {
       console.error("Change password error:", error);
@@ -140,6 +150,15 @@ export function createAuthController() {
       const updatedSessionUser = toSessionUser(updatedUser);
 
       (req as any).session.user = updatedSessionUser;
+
+      await writeAuditLog(req, {
+        action: "PROFILE_UPDATED",
+        entityType: "user",
+        entityId: updatedUser.id,
+        details: {
+          employeeId: updatedUser.employeeId,
+        },
+      });
 
       return res.json(updatedSessionUser);
     } catch (error) {
