@@ -7371,7 +7371,9 @@ async function startServer() {
   const PORT = Number.isNaN(requestedPort) ? 3000 : requestedPort;
   const HMR_PORT = Number.isNaN(requestedHmrPort) ? 24678 : requestedHmrPort;
   const strictPort = /^(1|true|yes)$/i.test(process.env.STRICT_PORT || "");
-  const useSecureCookies = isProductionMode;
+  const useSecureCookies =
+    isProductionMode &&
+    /^(1|true|yes)$/i.test(process.env.SECURE_COOKIES || "");
   const configuredSessionSecret = (process.env.SESSION_SECRET || "").trim();
   if (isProductionMode && (!configuredSessionSecret || configuredSessionSecret === "a-very-secret-key")) {
     throw new Error("SESSION_SECRET must be set to a strong private value before starting IPAS in production.");
