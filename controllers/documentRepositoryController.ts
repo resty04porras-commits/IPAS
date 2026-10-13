@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { writeAuditLog } from "./auditHelper.js";
 import {
   createDocument,
   deleteDocument,
@@ -123,6 +124,13 @@ export function createDocumentRepositoryController(
         uploadedBy: sessionUser.id,
       });
 
+      await writeAuditLog(req, {
+        action: "DOCUMENT_CREATED",
+        entityType: "document",
+        entityId: document.id,
+        details: {},
+      });
+
       return res.status(201).json(document);
     } catch (error: any) {
       console.error("Document create error:", error);
@@ -186,6 +194,19 @@ export function createDocumentRepositoryController(
         uploadedBy: existing.uploadedBy,
       });
 
+      if (!document) {
+        return res.status(404).json({
+          error: "Document not found.",
+        });
+      }
+
+      await writeAuditLog(req, {
+        action: "DOCUMENT_UPDATED",
+        entityType: "document",
+        entityId: document.id,
+        details: {},
+      });
+
       return res.json(document);
     } catch (error: any) {
       console.error("Document update error:", error);
@@ -233,6 +254,13 @@ export function createDocumentRepositoryController(
           error: "Document not found.",
         });
       }
+
+      await writeAuditLog(req, {
+        action: "DOCUMENT_DELETED",
+        entityType: "document",
+        entityId: deleted.id,
+        details: {},
+      });
 
       return res.json({
         success: true,
