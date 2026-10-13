@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import type { Multer } from "multer";
+import { writeAuditLog } from "./auditHelper.js";
 import {
   createAccountabilityForm,
   deleteAccountabilityForm,
@@ -280,6 +281,13 @@ export function createAccountabilityController(
         createdBy: sessionUser.id,
       });
 
+      await writeAuditLog(req, {
+        action: "ACCOUNTABILITY_CREATED",
+        entityType: "accountability_form",
+        entityId: created.id,
+        details: {},
+      });
+
       return res.status(201).json(created);
     } catch (error: any) {
       console.error("Create accountability form error:", error);
@@ -346,6 +354,13 @@ export function createAccountabilityController(
         });
       }
 
+      await writeAuditLog(req, {
+        action: "ACCOUNTABILITY_UPDATED",
+        entityType: "accountability_form",
+        entityId: updated.id,
+        details: {},
+      });
+
       return res.status(200).json(updated);
     } catch (error: any) {
       console.error("Update accountability form error:", error);
@@ -398,6 +413,13 @@ export function createAccountabilityController(
           error: "Accountability form not found.",
         });
       }
+
+      await writeAuditLog(req, {
+        action: "ACCOUNTABILITY_DELETED",
+        entityType: "accountability_form",
+        entityId: deleted.id,
+        details: {},
+      });
 
       return res.status(200).json({
         success: true,
