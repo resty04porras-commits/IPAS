@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { writeAuditLog } from "./auditHelper.js";
 
 type CompareSourceFile = {
   name: string;
@@ -225,6 +226,15 @@ export async function saveTerTravelEntry(
     const entry = sanitizeTravelEntry(terId, body?.entry);
 
     const savedEntry = await upsertTravelEntry(entry);
+
+    await writeAuditLog(req, {
+      action: "TER_ENTRY_SAVED",
+      entityType: "ter_travel_entry",
+      entityId: savedEntry.id,
+      details: {
+        terId: savedEntry.terId,
+      },
+    });
 
     return res.status(200).json({
       entry: toLegacyApiEntry(savedEntry),
