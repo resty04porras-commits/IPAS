@@ -42,11 +42,12 @@ type BarcodeScanResult = {
   durationMs?: number;
 };
 
+
 type OcrBoundingBox = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 };
 
 type OcrLine = {
@@ -78,7 +79,7 @@ type IntakeExtractionResponse = {
     cached: number;
     manual: number;
     usedFallback: boolean;
-    message: string;
+    message?: string;
   };
 };
 
