@@ -8,6 +8,13 @@ import path from "path";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import multer from "multer";
 import { createClient } from "webdav";
+import {
+  normalizeNextcloudPath,
+  sanitizeNextcloudSegment,
+  resolveNextcloudConfig,
+  getWebDAVClient,
+  verifyWebDAVConnection,
+} from "./services/nextcloudClient.js";
 import fs from "fs";
 import cookieSession from "cookie-session";
 import dotenv from "dotenv";
@@ -7497,14 +7504,12 @@ async function startServer() {
 
   // In-memory inventory store
 
-
   const managementController = createManagementController();
   const managementRoutes = createManagementRoutes(managementController);
   const authController = createAuthController();
   const cameraSyncController = createCameraSyncController();
   const cameraSyncRoutes = createCameraSyncRoutes(cameraSyncController);
   const authRoutes = createAuthRoutes(authController);
-
 
   // API routes
   app.get("/api/health", async (req, res) => {
@@ -7654,79 +7659,6 @@ async function startServer() {
 
   // User Registry Endpoints
   app.use("/api", managementRoutes);
-
-  const NEXTCLOUD_ROOT_SEGMENT = "IICTD Asset Management Record";
-  const DEFAULT_NEXTCLOUD_URL = "https://nextcloud.lbfinc.org";
-
-  const normalizeNextcloudUrl = (value?: string) => {
-    const trimmed = (value || "").trim();
-    return trimmed.replace(/\/+$/, "") || DEFAULT_NEXTCLOUD_URL;
-  };
-
-  const sanitizeNextcloudSegment = (value: string, label: string) => {
-    const trimmed = value.trim();
-
-    if (!trimmed) {
-      throw new Error(`${label} is required.`);
-    }
-
-    if (
-      trimmed === "."
-      || trimmed === ".."
-      || trimmed.includes("..")
-      || trimmed.includes("/")
-      || trimmed.includes("\\")
-      || trimmed.includes("\0")
-    ) {
-      throw new Error(`${label} contains an invalid folder name.`);
-    }
-
-    return trimmed;
-  };
-
-  const normalizeNextcloudPath = (targetPath: string) => {
-    const normalized = String(targetPath || "").replace(/\\/g, "/");
-    const parts = normalized
-      .split("/")
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .map((part) => sanitizeNextcloudSegment(part, "Target path"));
-
-    if (parts.length === 0) {
-      throw new Error("Target path is required.");
-    }
-
-    if (parts[0] !== NEXTCLOUD_ROOT_SEGMENT) {
-      throw new Error("Target path must stay inside the IICTD Asset Management Record folder.");
-    }
-
-    return `/${parts.join("/")}`;
-  };
-
-  const resolveNextcloudConfig = (overrides?: { url?: string; username?: string; password?: string }) => {
-    const url = normalizeNextcloudUrl(overrides?.url || process.env.NEXTCLOUD_URL || DEFAULT_NEXTCLOUD_URL);
-    const username = overrides?.username || process.env.NEXTCLOUD_USERNAME;
-    const password = overrides?.password || process.env.NEXTCLOUD_PASSWORD;
-
-    if (!username || !password) {
-      throw new Error("Nextcloud credentials not configured in environment variables. Please set NEXTCLOUD_USERNAME and NEXTCLOUD_PASSWORD in the Secrets panel.");
-    }
-
-    return { url, username, password };
-  };
-
-  const getWebDAVClient = (overrides?: { url?: string; username?: string; password?: string }) => {
-    const { url, username, password } = resolveNextcloudConfig(overrides);
-    const fullDavUrl = `${url}/remote.php/dav/files/${username}`;
-    return createClient(fullDavUrl, {
-      username,
-      password,
-    });
-  };
-
-  const verifyWebDAVConnection = async (client: ReturnType<typeof createClient>) => {
-    await client.getDirectoryContents("/");
-  };
 
   const documentRepositoryController = createDocumentRepositoryController({
     normalizeNextcloudPath,
