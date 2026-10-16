@@ -31,6 +31,8 @@ import { createManagementRoutes } from "./routes/managementRoutes.js";
 import { createAuthController } from "./controllers/authController.js";
 import { createAuthRoutes } from "./routes/authRoutes.js";
 import { createDocumentRepositoryController } from "./controllers/documentRepositoryController.js";
+import { registerDocumentRepositoryRoutes } from "./routes/documentRepository.js";
+import { getRepoMimeType } from "./services/documentRepositoryMime.js";
 import { createCameraSyncController } from "./controllers/cameraSyncController.js";
 import { createCameraSyncRoutes } from "./routes/cameraSyncRoutes.js";
 
@@ -7674,89 +7676,23 @@ async function startServer() {
     getRepoMimeType,
   });
 
-  // Nextcloud Create Folder Endpoint
-  app.post("/api/create-folder", documentRepositoryController.createFolder);
-
-  // Nextcloud Upload Endpoint
-  app.post("/api/upload-to-nextcloud", (req, res, next) => {
-    console.log(`[Upload] Starting upload request... Content-Length: ${req.headers['content-length']}`);
-    upload.array("files", 100)(req, res, (err) => {
-      if (err instanceof multer.MulterError) {
-        console.error(`[Upload] Multer Error: ${err.message}`, err);
-        return res.status(400).json({ error: `Multer error: ${err.message}` });
-      } else if (err) {
-        console.error(`[Upload] Unknown Multer Error: ${err.message}`, err);
-        return res.status(500).json({ error: `Unknown upload error: ${err.message}` });
-      }
-      console.log(`[Upload] Multer finished processing. Files: ${((req as any).files || []).length}`);
-      next();
-    });
-  }, documentRepositoryController.uploadToNextcloud);
-
-  // Global error handler - MUST be before SPA fallback
-  app.use((err: any, req: Request, res: any, next: any) => {
-    console.error("Global Error Handler:", err);
-    res.status(err.status || 500).json({
-      error: err.message || "Internal Server Error",
-      path: req.url
-    });
-  });
-
-  // Document Repository — browse Nextcloud directory
-  function getRepoMimeType(filename: string): string {
-    const ext = path.extname(filename).toLowerCase();
-    const map: Record<string, string> = {
-      ".pdf":  "application/pdf",
-      ".jpg":  "image/jpeg", ".jpeg": "image/jpeg",
-      ".png":  "image/png",  ".gif":  "image/gif",
-      ".webp": "image/webp", ".bmp":  "image/bmp",
-      ".heic": "image/heic", ".heif": "image/heif",
-      ".svg":  "image/svg+xml",
-      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      ".xls":  "application/vnd.ms-excel",
-      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      ".doc":  "application/msword",
-      ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      ".txt":  "text/plain", ".csv": "text/csv",
-      ".json": "application/json", ".xml": "application/xml",
-      ".zip":  "application/zip",
-    };
-    return map[ext] || "application/octet-stream";
-  }
-
-  // Proxy a single file from Nextcloud for in-app preview or direct download
-  app.post("/api/repository/file", documentRepositoryController.repositoryFile);
-
-  // Document Repository — PostgreSQL metadata
-  app.get(
-    "/api/repository/documents",
-    documentRepositoryController.listDocumentRecords,
-  );
-
-  app.get(
-    "/api/repository/documents/:id",
-    documentRepositoryController.getDocumentRecord,
-  );
-
-  app.post(
-    "/api/repository/documents",
-    documentRepositoryController.createDocumentRecord,
-  );
-
-  app.put(
-    "/api/repository/documents/:id",
-    documentRepositoryController.updateDocumentRecord,
-  );
-
-  app.delete(
-    "/api/repository/documents/:id",
-    documentRepositoryController.deleteDocumentRecord,
-  );
-
-  app.post("/api/repository/browse", documentRepositoryController.browseRepository);
+  // Document Repository: Nextcloud files and PostgreSQL metadata.
+  registerDocumentRepositoryRoutes(app, { documentRepositoryController, upload });
 
   // Real-time mobile → desktop camera sync (SSE)
   app.use("/api/cam", cameraSyncRoutes);
+
+  // Handle errors from every registered API module before the SPA fallback.
+  app.use((err: any, req: Request, res: any, next: any) => {
+    if (res.headersSent) {
+      return next(err);
+    }
+    console.error("Global Error Handler:", err);
+    res.status(err.status || 500).json({
+      error: err.message || "Internal Server Error",
+      path: req.url,
+    });
+  });
 
   // 404 for API routes - MUST be before SPA fallback
   app.all("/api/*", (req, res) => {

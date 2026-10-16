@@ -1,86 +1,46 @@
-import { Request, Response, NextFunction } from "express";
+import type { Express, NextFunction, Request, Response } from "express";
+import multer from "multer";
 import type { Multer } from "multer";
+import type { createDocumentRepositoryController } from "../controllers/documentRepositoryController.js";
 
-interface DocumentRepositoryController {
-  createFolder: (req: Request, res: Response) => Promise<void>;
-  uploadToNextcloud: (req: Request, res: Response) => Promise<void>;
-  repositoryFile: (req: Request, res: Response) => Promise<void>;
-  listDocumentRecords: (req: Request, res: Response) => Promise<void>;
-  getDocumentRecord: (req: Request, res: Response) => Promise<void>;
-  createDocumentRecord: (req: Request, res: Response) => Promise<void>;
-  updateDocumentRecord: (req: Request, res: Response) => Promise<void>;
-  deleteDocumentRecord: (req: Request, res: Response) => Promise<void>;
-  browseRepository: (req: Request, res: Response) => Promise<void>;
-}
+type DocumentRepositoryController = ReturnType<typeof createDocumentRepositoryController>;
 
 interface RegisterDocumentRepositoryRoutesOptions {
   documentRepositoryController: DocumentRepositoryController;
   upload: Multer;
 }
 
-/**
- * Register all Document Repository routes (Nextcloud WebDAV + PostgreSQL metadata).
- * 
- * Routes:
- * - POST /api/create-folder
- * - POST /api/upload-to-nextcloud
- * - POST /api/repository/file
- * - GET  /api/repository/documents
- * - GET  /api/repository/documents/:id
- * - POST /api/repository/documents
- * - PUT  /api/repository/documents/:id
- * - DELETE /api/repository/documents/:id
- * - POST /api/repository/browse
- */
+/** Register the existing Nextcloud/WebDAV and PostgreSQL document endpoints. */
 export function registerDocumentRepositoryRoutes(
-  app: any,
-  { documentRepositoryController, upload }: RegisterDocumentRepositoryRoutesOptions
+  app: Express,
+  { documentRepositoryController: controller, upload }: RegisterDocumentRepositoryRoutesOptions,
 ): void {
-  // Nextcloud Create Folder Endpoint
-  app.post("/api/create-folder", documentRepositoryController.createFolder);
+  app.post("/api/create-folder", controller.createFolder);
 
-// Nextcloud Upload Endpoint
-  app.post("/api/upload-to-nextcloud", (req: Request, res: Response, next: NextFunction) => {
-    console.log(`[Upload] Starting upload request... Content-Length: ${req.headers['content-length']}`);
-    upload.array("files", 100)(req, res, (err) => {
-      if (err) {
-        console.error(`[Upload] Multer Error: ${err.message}`, err);
-        const status = (err as any).code ? 400 : 500;
-        return res.status(status).json({ error: `Upload error: ${err.message}` });
-      }
-      console.log(`[Upload] Multer finished processing. Files: ${((req as any).files || []).length}`);
-      next();
-    });
-  }, documentRepositoryController.uploadToNextcloud);
-
-// Proxy a single file from Nextcloud for in-app preview or direct download
-  app.post("/api/repository/file", documentRepositoryController.repositoryFile);
-
-// Document Repository — PostgreSQL metadata
-  app.get(
-    "/api/repository/documents",
-    documentRepositoryController.listDocumentRecords,
+  app.post(
+    "/api/upload-to-nextcloud",
+    (req: Request, res: Response, next: NextFunction) => {
+      console.log(`[Upload] Starting upload request... Content-Length: ${req.headers['content-length']}`);
+      upload.array("files", 100)(req, res, (err) => {
+        if (err instanceof multer.MulterError) {
+          console.error(`[Upload] Multer Error: ${err.message}`, err);
+          return res.status(400).json({ error: `Multer error: ${err.message}` });
+        } else if (err) {
+          console.error(`[Upload] Unknown Multer Error: ${err.message}`, err);
+          return res.status(500).json({ error: `Unknown upload error: ${err.message}` });
+        }
+        console.log(`[Upload] Multer finished processing. Files: ${((req as any).files || []).length}`);
+        next();
+      });
+    },
+    controller.uploadToNextcloud,
   );
 
-app.get(
-    "/api/repository/documents/:id",
-    documentRepositoryController.getDocumentRecord,
-  );
-
-app.post(
-    "/api/repository/documents",
-    documentRepositoryController.createDocumentRecord,
-  );
-
-app.put(
-    "/api/repository/documents/:id",
-    documentRepositoryController.updateDocumentRecord,
-  );
-
-app.delete(
-    "/api/repository/documents/:id",
-    documentRepositoryController.deleteDocumentRecord,
-  );
-
-app.post("/api/repository/browse", documentRepositoryController.browseRepository);
+  app.post("/api/repository/file", controller.repositoryFile);
+  app.get("/api/repository/documents", controller.listDocumentRecords);
+  app.get("/api/repository/documents/:id", controller.getDocumentRecord);
+  app.post("/api/repository/documents", controller.createDocumentRecord);
+  app.put("/api/repository/documents/:id", controller.updateDocumentRecord);
+  app.delete("/api/repository/documents/:id", controller.deleteDocumentRecord);
+  app.post("/api/repository/browse", controller.browseRepository);
 }
