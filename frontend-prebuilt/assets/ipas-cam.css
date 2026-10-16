@@ -1,0 +1,978 @@
+/* ============================================================
+   IPAS Phone-Camera Sync  — UI styles  (v6)
+   Mobile: floating camera button + upload status toast
+   Desktop: collapsible "Captures" panel + enhanced lightbox
+            with Equipment Details form
+   ============================================================ */
+
+/* ── shared tokens ──────────────────────────────────────────── */
+:root {
+  --cam-accent:   #2563eb;
+  --cam-green:    #16a34a;
+  --cam-red:      #dc2626;
+  --cam-bg:       #ffffff;
+  --cam-surface:  #f8fafc;
+  --cam-border:   #e2e8f0;
+  --cam-shadow:   0 8px 30px rgba(15,23,42,.18);
+  --cam-radius:   1rem;
+  --cam-z:        9000;
+}
+
+/* ── mobile capture button container ─────────────────────────── */
+#ipas-cam-mobile-btns {
+  position: fixed;
+  bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+  right:  calc(1.25rem + env(safe-area-inset-right,  0px));
+  z-index: var(--cam-z);
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  align-items: flex-end;
+}
+
+/* shared button base */
+#ipas-cam-mobile-btns button {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .7rem 1.1rem;
+  border: none;
+  border-radius: 2rem;
+  color: #fff;
+  font-size: .82rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  transition: transform .15s, box-shadow .15s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  white-space: nowrap;
+}
+#ipas-cam-mobile-btns button:active {
+  transform: scale(.93);
+}
+#ipas-cam-mobile-btns button svg { flex-shrink: 0; }
+
+/* Equipment — blue */
+#ipas-cam-btn-equipment {
+  background: var(--cam-accent);
+  box-shadow: 0 4px 18px rgba(37,99,235,.45);
+}
+#ipas-cam-btn-equipment:active {
+  box-shadow: 0 2px 8px rgba(37,99,235,.35);
+}
+
+/* Tickets — emerald */
+#ipas-cam-btn-ticket {
+  background: #059669;
+  box-shadow: 0 4px 18px rgba(5,150,105,.40);
+}
+#ipas-cam-btn-ticket:active {
+  box-shadow: 0 2px 8px rgba(5,150,105,.30);
+}
+
+/* ── mobile upload toast ─────────────────────────────────────── */
+#ipas-cam-toast {
+  position: fixed;
+  bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+  left:  50%;
+  transform: translateX(-50%);
+  z-index: var(--cam-z);
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .7rem 1.1rem;
+  border-radius: 2rem;
+  background: #1e293b;
+  color: #fff;
+  font-size: .8rem;
+  font-weight: 600;
+  font-family: inherit;
+  white-space: nowrap;
+  box-shadow: 0 4px 18px rgba(0,0,0,.28);
+  transition: opacity .3s, transform .3s;
+  max-width: calc(100vw - 2rem);
+  white-space: normal;
+  text-align: center;
+}
+#ipas-cam-toast.hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(8px);
+}
+#ipas-cam-toast.success { background: var(--cam-green); }
+#ipas-cam-toast.error   { background: var(--cam-red); }
+
+/* spinner inside toast */
+#ipas-cam-toast .cam-spinner {
+  width: 14px; height: 14px;
+  border: 2px solid rgba(255,255,255,.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: cam-spin .6s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes cam-spin { to { transform: rotate(360deg); } }
+
+/* ── desktop panel shell ─────────────────────────────────────── */
+#ipas-cam-panel {
+  position: fixed;
+  bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+  right:  calc(1.25rem + env(safe-area-inset-right,  0px));
+  z-index: var(--cam-z);
+  width: 320px;
+  max-width: calc(100vw - 2rem);
+  border-radius: var(--cam-radius);
+  background: var(--cam-bg);
+  border: 1px solid var(--cam-border);
+  box-shadow: var(--cam-shadow);
+  font-family: inherit;
+  overflow: hidden;
+  transition: box-shadow .2s;
+}
+#ipas-cam-panel:focus-within {
+  box-shadow: var(--cam-shadow), 0 0 0 3px rgba(37,99,235,.15);
+}
+
+/* panel header */
+#ipas-cam-panel-header {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .65rem .9rem;
+  background: var(--cam-surface);
+  border-bottom: 1px solid var(--cam-border);
+  cursor: pointer;
+  user-select: none;
+}
+#ipas-cam-panel-header:hover { background: #f1f5f9; }
+#ipas-cam-panel-title {
+  flex: 1;
+  font-size: .8rem;
+  font-weight: 700;
+  color: #1e293b;
+  letter-spacing: .02em;
+}
+#ipas-cam-status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+  flex-shrink: 0;
+  transition: background .4s;
+}
+#ipas-cam-status-dot.connected  { background: var(--cam-green); }
+#ipas-cam-status-dot.connecting { background: #f59e0b; animation: cam-pulse 1s ease-in-out infinite; }
+#ipas-cam-status-dot.error      { background: var(--cam-red); }
+@keyframes cam-pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+#ipas-cam-count-badge {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px; height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--cam-accent);
+  color: #fff;
+  font-size: .65rem;
+  font-weight: 800;
+}
+#ipas-cam-count-badge.visible { display: flex; }
+
+#ipas-cam-panel-toggle {
+  background: none; border: none; padding: 2px;
+  color: #64748b; cursor: pointer; border-radius: 4px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+#ipas-cam-panel-toggle:hover { background: #e2e8f0; }
+
+/* panel body */
+#ipas-cam-panel-body {
+  max-height: 420px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  transition: max-height .22s ease;
+}
+#ipas-cam-panel-body.collapsed {
+  max-height: 0;
+  overflow: hidden;
+}
+
+/* empty state */
+#ipas-cam-empty {
+  padding: 1.5rem 1rem;
+  text-align: center;
+  color: #94a3b8;
+  font-size: .8rem;
+}
+#ipas-cam-empty svg { margin: 0 auto .75rem; display: block; opacity: .4; }
+
+/* ── capture card ────────────────────────────────────────────── */
+.ipas-cam-card {
+  display: flex;
+  gap: .65rem;
+  padding: .65rem .9rem;
+  border-bottom: 1px solid var(--cam-border);
+  animation: cam-slide-in .22s ease;
+  background: #fff;
+  transition: opacity .25s, transform .25s;
+}
+.ipas-cam-card:last-child { border-bottom: none; }
+.ipas-cam-card.cam-card-removing {
+  opacity: 0;
+  transform: translateX(24px);
+  pointer-events: none;
+}
+@keyframes cam-slide-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* thumbnail */
+.ipas-cam-thumb {
+  width: 56px; height: 56px;
+  flex-shrink: 0;
+  border-radius: .5rem;
+  overflow: hidden;
+  border: 1px solid var(--cam-border);
+  background: var(--cam-surface);
+  cursor: pointer;
+  position: relative;
+  align-self: center;
+}
+.ipas-cam-thumb img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  transition: transform .2s;
+}
+.ipas-cam-thumb:hover img { transform: scale(1.06); }
+
+/* info column */
+.ipas-cam-card-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+}
+
+/* top row */
+.ipas-cam-card-row-top {
+  display: flex;
+  align-items: flex-start;
+  gap: .3rem;
+}
+.ipas-cam-card-name {
+  flex: 1;
+  font-size: .72rem;
+  font-weight: 600;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* × dismiss */
+.cam-dismiss-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px; height: 18px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0;
+  transition: background .15s, color .15s;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.cam-dismiss-btn:hover {
+  background: #fee2e2;
+  color: var(--cam-red);
+}
+
+/* time + status */
+.ipas-cam-card-time-row {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  flex-wrap: wrap;
+}
+.ipas-cam-card-time {
+  font-size: .68rem;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+/* capture type badge (Equipment / Ticket) */
+.cam-type-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: .58rem;
+  font-weight: 800;
+  padding: .08rem .38rem;
+  border-radius: 999px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cam-type-equipment {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+.cam-type-ticket {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+/* status badge */
+.cam-card-status {
+  display: inline-flex;
+  align-items: center;
+  font-size: .62rem;
+  font-weight: 700;
+  padding: .1rem .4rem;
+  border-radius: 999px;
+  letter-spacing: .01em;
+  white-space: nowrap;
+}
+.cam-status-uploading { background: #eff6ff; color: #3b82f6; }
+.cam-status-applied   { background: #dcfce7; color: #15803d; }
+.cam-status-ready     { background: #fef9c3; color: #854d0e; }
+.cam-status-pending   { background: #dbeafe; color: #1d4ed8; }
+.cam-status-failed    { background: #fee2e2; color: #b91c1c; }
+
+/* ── syncing overlay on a card ───────────────────────────────── */
+.ipas-cam-card.syncing .ipas-cam-thumb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(255,255,255,.6);
+}
+.ipas-cam-card .cam-spinner {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%,-50%);
+  width: 20px; height: 20px;
+  border: 2px solid rgba(37,99,235,.25);
+  border-top-color: var(--cam-accent);
+  border-radius: 50%;
+  animation: cam-spin .6s linear infinite;
+  pointer-events: none;
+}
+
+/* ════════════════════════════════════════════════════════════════
+   ENHANCED LIGHTBOX  (v6)
+   ════════════════════════════════════════════════════════════════ */
+
+/* overlay backdrop */
+#ipas-cam-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--cam-z) + 10);
+  background: rgba(15, 23, 42, 0.82);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 1.25rem 1rem 2rem;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+#ipas-cam-lightbox.hidden { display: none; }
+
+/* modal box */
+#ipas-cam-lightbox-box {
+  background: #fff;
+  border-radius: 1rem;
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;          /* vertical auto-margin removed — was causing flex clipping */
+  overflow-x: hidden;      /* keep border-radius clip on x; let y scroll */
+  overflow-y: auto;        /* box itself scrolls so form below image is always reachable */
+  -webkit-overflow-scrolling: touch;
+  box-shadow: 0 24px 60px rgba(0,0,0,.45);
+  display: flex;
+  flex-direction: column;
+  font-family: inherit;
+  flex-shrink: 0;          /* never let the flex overlay compress the box */
+}
+
+/* ── title bar ─────────────────────────────────────────────── */
+#ipas-cam-lightbox-titlebar {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .65rem 1rem;
+  background: #1e293b;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+#ipas-cam-lightbox-filename {
+  flex: 1;
+  font-size: .75rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.cam-lbx-titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  flex-shrink: 0;
+}
+
+.cam-lbx-titlebar-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  padding: .3rem .65rem;
+  border: 1px solid rgba(255,255,255,.18);
+  border-radius: .45rem;
+  background: rgba(255,255,255,.08);
+  color: #e2e8f0;
+  font-size: .72rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+  white-space: nowrap;
+}
+.cam-lbx-titlebar-actions button:hover {
+  background: rgba(255,255,255,.18);
+  border-color: rgba(255,255,255,.35);
+  color: #fff;
+}
+.cam-lbx-titlebar-actions button svg { flex-shrink: 0; }
+
+/* ── image area ────────────────────────────────────────────── */
+#ipas-cam-lightbox-img-wrap {
+  background: #0f172a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 320px;
+  max-height: 36vh;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+#ipas-cam-lbx-img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  cursor: default;
+}
+
+/* ── Smart Capture Modify modal ───────────────────────────────
+   The modify dialog is injected at runtime, so its Tailwind arbitrary
+   utility classes are not always present in the built stylesheet. Keep
+   these hard CSS rules scoped to that injected view only. */
+[data-ipas-image-modify="1"] {
+  padding: clamp(.75rem, 2vh, 1rem) !important;
+}
+
+[data-ipas-image-modify="1"] > div.relative {
+  width: min(90vw, 850px) !important;
+  max-height: 90vh !important;
+  border-radius: 1rem !important;
+}
+
+[data-ipas-image-modify="1"] [data-role="file-name"] {
+  max-width: 100%;
+}
+
+[data-ipas-image-modify="1"] [data-role="preview-box"] {
+  height: clamp(340px, 42vh, 400px) !important;
+  max-height: 42vh !important;
+  min-height: 300px !important;
+  overflow: hidden !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background: #0f172a !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: .75rem !important;
+  cursor: grab !important;
+  position: relative !important;
+  user-select: none !important;
+}
+
+[data-ipas-image-modify="1"] [data-role="preview"] {
+  display: block !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+  object-position: center center !important;
+  margin: auto !important;
+  transform-origin: center center !important;
+  will-change: transform !important;
+  cursor: inherit !important;
+  user-select: none !important;
+  -webkit-user-drag: none !important;
+}
+
+[data-ipas-image-modify="1"] div:has(> label [data-field="component"]) {
+  width: min(100%, 760px) !important;
+  margin: 0 auto !important;
+  padding: 1rem !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: .875rem !important;
+  background: #fff !important;
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: .85rem 1rem !important;
+}
+
+[data-ipas-image-modify="1"] label:has([data-field]) {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: .35rem !important;
+  margin: 0 !important;
+}
+
+[data-ipas-image-modify="1"] label:has([data-field="description"]) {
+  grid-column: auto !important;
+}
+
+[data-ipas-image-modify="1"] label:has([data-field="remarks"]) {
+  grid-column: 1 / -1 !important;
+}
+
+[data-ipas-image-modify="1"] label:has([data-field]) span {
+  line-height: 1.2 !important;
+}
+
+[data-ipas-image-modify="1"] [data-field] {
+  width: 100% !important;
+  min-height: 38px !important;
+  height: 40px !important;
+  padding: .45rem .7rem !important;
+  border-radius: .6rem !important;
+  font-size: .875rem !important;
+  line-height: 1.25rem !important;
+  box-sizing: border-box !important;
+}
+
+[data-ipas-image-modify="1"] textarea[data-field="description"] {
+  min-height: 40px !important;
+  height: 40px !important;
+  resize: none !important;
+}
+
+[data-ipas-image-modify="1"] textarea[data-field="remarks"] {
+  min-height: 78px !important;
+  height: 84px !important;
+  resize: vertical !important;
+}
+
+[data-ipas-image-modify="1"] [data-role="rotate"] {
+  height: 2rem !important;
+  min-width: 4.75rem !important;
+  border-radius: .5rem !important;
+  border: 1px solid #e5e7eb !important;
+  background: #fff !important;
+  color: #374151 !important;
+  font-size: .75rem !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+}
+
+[data-ipas-image-modify="1"] [data-role="rotate"]:hover {
+  background: #f3f4f6 !important;
+}
+
+@media (min-width: 1024px) {
+  [data-ipas-image-modify="1"] > div.relative {
+    width: min(96vw, 1220px) !important;
+  }
+
+  [data-ipas-image-modify="1"] > div.relative > div:nth-child(2) {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1.1fr) minmax(360px, .9fr) !important;
+    gap: 1.25rem !important;
+    align-items: start !important;
+    padding: 1.25rem !important;
+  }
+
+  [data-ipas-image-modify="1"] > div.relative > div:nth-child(2) > * {
+    min-width: 0 !important;
+    margin-top: 0 !important;
+  }
+
+  [data-ipas-image-modify="1"] > div.relative > div:nth-child(2) > :first-child {
+    height: 100% !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+
+  [data-ipas-image-modify="1"] [data-role="preview-box"] {
+    height: clamp(360px, 52vh, 560px) !important;
+    max-height: 52vh !important;
+    flex: 1 1 auto !important;
+  }
+
+  [data-ipas-image-modify="1"] div:has(> label [data-field="component"]) {
+    width: 100% !important;
+    margin: 0 !important;
+    align-self: stretch !important;
+  }
+}
+
+/* ── Smart Capture saved equipment details table ────────────── */
+.ipas-smart-capture-equipment-table {
+  margin-top: 1rem;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  border-radius: .875rem;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .08);
+}
+
+.ipas-smart-capture-equipment-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.ipas-smart-capture-equipment-table table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: .875rem;
+  color: #1f2937;
+}
+
+.ipas-smart-capture-equipment-table th,
+.ipas-smart-capture-equipment-table td {
+  border: 1px solid #94a3b8;
+  padding: .55rem .75rem;
+  line-height: 1.35;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.ipas-smart-capture-equipment-table th {
+  height: 38px;
+  background: #f8fafc;
+  color: #111827;
+  font-weight: 800;
+  text-align: center;
+}
+
+.ipas-smart-capture-equipment-table td {
+  height: 40px;
+  background: #fff;
+}
+
+.ipas-smart-capture-equipment-table tbody tr:nth-child(even) td {
+  background: #f9fafb;
+}
+
+.ipas-smart-capture-equipment-empty {
+  height: 48px !important;
+  color: #64748b !important;
+  font-size: .82rem;
+  font-style: italic;
+  text-align: center;
+}
+
+/* ── equipment details form ─────────────────────────────────── */
+#ipas-cam-lightbox-form {
+  padding: 1.25rem 1.25rem 1.5rem;
+  border-top: 1px solid var(--cam-border);
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  flex-shrink: 0;   /* never compress the form out of view */
+}
+
+/* form header */
+.cam-lbx-form-header {
+  display: flex;
+  flex-direction: column;
+  gap: .2rem;
+}
+.cam-lbx-form-title {
+  font-size: .9rem;
+  font-weight: 800;
+  color: #1e293b;
+  letter-spacing: .01em;
+}
+.cam-lbx-form-sub {
+  font-size: .74rem;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+/* form grid */
+.cam-lbx-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: .75rem .85rem;
+}
+
+.cam-lbx-field { display: flex; flex-direction: column; gap: .28rem; }
+.cam-lbx-field-full { grid-column: 1 / -1; }
+
+.cam-lbx-label {
+  font-size: .68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: #94a3b8;
+}
+
+.cam-lbx-input,
+.cam-lbx-select {
+  width: 100%;
+  padding: .48rem .7rem;
+  border: 1px solid var(--cam-border);
+  border-radius: .55rem;
+  background: #f8fafc;
+  color: #1e293b;
+  font-size: .82rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+  box-sizing: border-box;
+}
+.cam-lbx-input:focus,
+.cam-lbx-select:focus {
+  border-color: var(--cam-accent);
+  box-shadow: 0 0 0 3px rgba(37,99,235,.12);
+  background: #fff;
+}
+.cam-lbx-select { cursor: pointer; }
+
+/* ── Set 1 / Set 2 sections ─────────────────────────────────── */
+.cam-lbx-set {
+  border: 1px solid var(--cam-border);
+  border-radius: .75rem;
+  padding: .85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: .7rem;
+  background: #f8fafc;
+}
+.cam-lbx-set-hdr {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+}
+.cam-lbx-set-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: .18rem .58rem;
+  border-radius: .4rem;
+  font-size: .65rem;
+  font-weight: 800;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+.cam-lbx-set-tag-1 { background: #dbeafe; color: #1d4ed8; }
+.cam-lbx-set-tag-2 { background: #ede9fe; color: #6d28d9; }
+.cam-lbx-set-desc {
+  font-size: .73rem;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+/* Set 2 checkbox + label inline row */
+.cam-lbx-set2-toggle-lbl {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  cursor: pointer;
+  user-select: none;
+}
+.cam-lbx-checkbox {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--cam-accent);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+/* Set 2 field area */
+.cam-lbx-set2-fields {
+  transition: opacity .2s;
+}
+.cam-lbx-set2-disabled {
+  opacity: .38;
+  pointer-events: none;
+}
+
+/* ── save feedback strip ────────────────────────────────────── */
+.cam-lbx-feedback {
+  padding: .55rem .8rem;
+  border-radius: .55rem;
+  font-size: .78rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.cam-lbx-feedback.hidden { display: none; }
+.cam-lbx-feedback-success {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+.cam-lbx-feedback-error {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+.cam-lbx-feedback-warn {
+  background: #fefce8;
+  color: #854d0e;
+  border: 1px solid #fde68a;
+}
+
+/* ── form action buttons ────────────────────────────────────── */
+.cam-lbx-form-actions {
+  display: flex;
+  gap: .65rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.cam-lbx-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: .55rem 1.1rem;
+  border-radius: .65rem;
+  font-size: .82rem;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background .15s, box-shadow .15s, border-color .15s;
+  white-space: nowrap;
+  min-height: 38px;
+  touch-action: manipulation;
+}
+.cam-lbx-btn:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+.cam-lbx-btn-cancel {
+  background: #f1f5f9;
+  color: #475569;
+  border-color: var(--cam-border);
+}
+.cam-lbx-btn-cancel:hover:not(:disabled) {
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+}
+.cam-lbx-btn-save {
+  background: var(--cam-accent);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(37,99,235,.3);
+}
+.cam-lbx-btn-save:hover:not(:disabled) {
+  background: #1d4ed8;
+  box-shadow: 0 4px 14px rgba(37,99,235,.4);
+}
+
+/* ── new-capture notification flash ─────────────────────────── */
+#ipas-cam-notify {
+  position: fixed;
+  top: calc(1rem + env(safe-area-inset-top, 0px));
+  right: calc(1rem + env(safe-area-inset-right, 0px));
+  z-index: calc(var(--cam-z) + 5);
+  background: var(--cam-accent);
+  color: #fff;
+  padding: .6rem 1rem;
+  border-radius: .75rem;
+  font-size: .8rem;
+  font-weight: 700;
+  font-family: inherit;
+  box-shadow: 0 4px 18px rgba(37,99,235,.45);
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  transition: opacity .3s, transform .3s;
+  max-width: calc(100vw - 2rem);
+}
+#ipas-cam-notify.hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-8px);
+}
+
+/* ── responsive: hide mobile buttons on desktop; panel only on desktop ── */
+@media (min-width: 1024px) {
+  /* Mobile capture buttons are for phones only */
+  #ipas-cam-mobile-btns { display: none !important; }
+  #ipas-cam-toast       { display: none !important; }
+}
+@media (max-width: 1023px) {
+  /* Desktop panel is injected only on non-mobile, but guard via CSS too */
+  #ipas-cam-panel { display: none !important; }
+
+  #ipas-cam-mobile-btns {
+    bottom: calc(1.25rem + env(safe-area-inset-bottom, 0px));
+    right:  calc(1.25rem + env(safe-area-inset-right,  0px));
+  }
+  /* On mobile the lightbox stacks fields full-width */
+  .cam-lbx-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .cam-lbx-field-full { grid-column: 1; }
+  .cam-lbx-titlebar-actions button span { display: none; }
+  #ipas-cam-lightbox {
+    padding: .5rem .5rem 1.5rem;
+  }
+  #ipas-cam-lightbox-img-wrap {
+    height: 280px;
+    max-height: 34vh;
+  }
+  #ipas-cam-lbx-img { max-height: 100%; }
+
+  [data-ipas-image-modify="1"] {
+    align-items: flex-start !important;
+    padding: .5rem !important;
+  }
+  [data-ipas-image-modify="1"] [data-role="preview-box"] {
+    height: 280px !important;
+    min-height: 260px !important;
+    max-height: 34vh !important;
+  }
+  [data-ipas-image-modify="1"] div:has(> label [data-field="component"]) {
+    grid-template-columns: 1fr !important;
+    padding: .9rem !important;
+  }
+  [data-ipas-image-modify="1"] label:has([data-field="remarks"]),
+  [data-ipas-image-modify="1"] label:has([data-field="description"]) {
+    grid-column: 1 !important;
+  }
+
+  .cam-lbx-form-actions { justify-content: stretch; }
+  .cam-lbx-btn { flex: 1; }
+}
+
+/* ── very small screens ─────────────────────────────────────── */
+@media (max-width: 380px) {
+  .cam-lbx-titlebar-actions { gap: .25rem; }
+  .cam-lbx-titlebar-actions button { padding: .28rem .45rem; font-size: .65rem; }
+  #ipas-cam-lightbox-form { padding: 1rem .9rem 1.25rem; }
+}

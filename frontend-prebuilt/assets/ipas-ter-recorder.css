@@ -1,0 +1,235 @@
+/* TER Liquidation travel entry recorder. Add-only UI mounted by ipas-ter-recorder.js. */
+#ipas-ter-recorder {
+  width: 100%;
+  margin: 0 0 1rem;
+  border: 1px solid #d1fae5;
+  border-radius: 1.5rem;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  overflow: hidden;
+}
+
+#ipas-ter-recorder * {
+  box-sizing: border-box;
+}
+
+.ipas-ter-recorder-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #ecfdf5;
+  background: #f0fdf4;
+}
+
+.ipas-ter-recorder-head h3 {
+  margin: 0;
+  color: #111827;
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+.ipas-ter-recorder-status {
+  min-height: 1.25rem;
+  color: #047857;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-align: right;
+}
+
+.ipas-ter-recorder-status.error {
+  color: #dc2626;
+}
+
+.ipas-ter-recorder-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1.25rem;
+}
+
+.ipas-ter-recorder-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.ipas-ter-recorder-button {
+  min-height: 3rem;
+  border: 0;
+  border-radius: 1rem;
+  padding: 0.75rem 1rem;
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 800;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.ipas-ter-recorder-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ipas-ter-recorder-button.depart,
+.ipas-ter-recorder-button.save {
+  background: #059669;
+}
+
+.ipas-ter-recorder-button.arrive,
+.ipas-ter-recorder-button.camera {
+  background: #2563eb;
+}
+
+.ipas-ter-recorder-button.capture {
+  background: #7c3aed;
+}
+
+.ipas-ter-recorder-button.remove {
+  background: #dc2626;
+}
+
+.ipas-ter-recorder-times {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.ipas-ter-recorder-timebox {
+  min-width: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 1rem;
+  background: #f9fafb;
+  padding: 0.75rem;
+}
+
+.ipas-ter-recorder-timebox span {
+  display: block;
+  color: #9ca3af;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.ipas-ter-recorder-timebox strong {
+  display: block;
+  min-height: 1.3rem;
+  margin-top: 0.25rem;
+  color: #111827;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.ipas-ter-recorder-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.ipas-ter-recorder-field {
+  min-width: 0;
+}
+
+.ipas-ter-recorder-field.full {
+  grid-column: 1 / -1;
+}
+
+.ipas-ter-recorder-field label {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: #9ca3af;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.ipas-ter-recorder-field input,
+.ipas-ter-recorder-field select,
+.ipas-ter-recorder-field textarea {
+  width: 100%;
+  min-height: 2.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 1rem;
+  background: #f9fafb;
+  padding: 0.75rem 0.9rem;
+  color: #111827;
+  font-family: inherit;
+  font-size: 0.875rem;
+  outline: none;
+}
+
+.ipas-ter-recorder-field textarea {
+  min-height: 4.75rem;
+  resize: vertical;
+}
+
+.ipas-ter-recorder-camera {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.ipas-ter-recorder-preview {
+  display: none;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 1rem;
+  background: #111827;
+}
+
+.ipas-ter-recorder-preview.active {
+  display: block;
+}
+
+.ipas-ter-recorder-preview video,
+.ipas-ter-recorder-preview img {
+  display: block;
+  width: 100%;
+  max-height: 18rem;
+  object-fit: contain;
+}
+
+.ipas-ter-recorder-ticket-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.ipas-ter-recorder-ticket-actions .ipas-ter-recorder-button {
+  flex: 1 1 10rem;
+}
+
+@media (max-width: 720px) {
+  #ipas-ter-recorder {
+    border-radius: 1rem;
+  }
+
+  .ipas-ter-recorder-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .ipas-ter-recorder-status {
+    text-align: left;
+  }
+
+  .ipas-ter-recorder-body {
+    padding: 1rem;
+  }
+
+  .ipas-ter-recorder-actions,
+  .ipas-ter-recorder-times,
+  .ipas-ter-recorder-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .ipas-ter-recorder-button {
+    width: 100%;
+    min-height: 3.25rem;
+  }
+}

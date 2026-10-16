@@ -81,6 +81,11 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const serverEntry = path.join(projectRoot, "dist-server", "server.cjs");
+if (!fs.existsSync(path.join(projectRoot, "dist", "index.html"))) {
+  console.error("Production frontend is missing. Run npm run build first to restore dist/.");
+  process.exit(1);
+}
+
 if (!fs.existsSync(serverEntry)) {
   console.error("Production server bundle is missing. Run npm run build first.");
   process.exit(1);
