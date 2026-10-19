@@ -3,6 +3,7 @@ import type {
   OcrRecognizeOptions, OcrBatchProbe, OcrWorkerResult as PaddleOcrWorkerResult,
 } from "./types/ocr.js";
 import { buildPlainTextSnapshot, sanitizeOcrValue, toOcrSnapshot } from "./services/ocr/snapshots.js";
+import { createOcrHttpClient } from "./services/ocr/httpClient.js";
 import { createOcrRecognizer, shouldUseOcrService } from "./services/ocr/recognizer.js";
 import express, { Request } from "express";
 import dns from "node:dns/promises";
@@ -1302,89 +1303,6 @@ async function ensurePaddleOcrServiceReady() {
   await ocrServiceStartupPromise;
 }
 
-async function parseOcrServiceError(response: Response): Promise<string> {
-  const contentType = response.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    const payload = await response.json().catch(() => null);
-    return String(payload?.error || payload?.detail || `OCR service returned ${response.status}.`);
-  }
-
-  return await response.text().catch(() => `OCR service returned ${response.status}.`);
-}
-
-async function postToPaddleOcrService(
-  file: CompareSourceFile,
-  options: {
-    rectangle?: OcrRecognizeOptions["rectangle"];
-    rectangles?: OcrBatchProbe[];
-    mode?: OcrRecognizeOptions["mode"];
-  } = {}
-): Promise<PaddleOcrWorkerResult> {
-  if (file.contentType !== "inlineData") {
-    return { snapshot: buildPlainTextSnapshot(file.content || "") };
-  }
-
-  await ensurePaddleOcrServiceReady();
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ocrServiceTimeoutMs);
-  const formData = new FormData();
-  const imageBuffer = Buffer.from(file.content, "base64");
-  const imageBlob = new Blob([imageBuffer], { type: file.mimeType || "application/octet-stream" });
-
-  formData.append("file", imageBlob, file.name || "image");
-  formData.append("mode", options.mode || (options.rectangles ? "probe" : "full"));
-  if (options.rectangle) {
-    formData.append("rectangle", JSON.stringify(options.rectangle));
-  }
-  if (options.rectangles) {
-    formData.append("rectangles", JSON.stringify(options.rectangles));
-  }
-
-  const startedAt = Date.now();
-  try {
-    const response = await fetch(`${ocrServiceUrl}/ocr`, {
-      method: "POST",
-      body: formData,
-      signal: controller.signal,
-    });
-
-    const elapsedMs = Date.now() - startedAt;
-    if (!response.ok) {
-      throw new Error(await parseOcrServiceError(response));
-    }
-
-    const payload = await response.json();
-    if (payload?.error) {
-      throw new Error(String(payload.error));
-    }
-
-    const result: PaddleOcrWorkerResult = {};
-    if (payload?.snapshot) {
-      result.snapshot = toOcrSnapshot(payload.snapshot);
-    } else if (payload?.text || payload?.lines) {
-      result.snapshot = toOcrSnapshot(payload);
-    }
-
-    if (payload?.snapshots && typeof payload.snapshots === "object") {
-      result.snapshots = Object.fromEntries(
-        Object.entries(payload.snapshots).map(([key, snapshot]) => [key, toOcrSnapshot(snapshot)])
-      );
-    }
-
-    console.log(`[OCR] engine=easyocr-service file="${file.name}" elapsed=${elapsedMs}ms fallback=false`);
-    return result;
-  } catch (error: any) {
-    if (error?.name === "AbortError") {
-      throw new Error(`Python EasyOCR service timed out after ${Math.round(ocrServiceTimeoutMs / 1000)} seconds.`);
-    }
-
-    throw error instanceof Error ? error : new Error(String(error));
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
 async function scanBarcodeWithLocalWorker(file: CompareSourceFile, timeoutMs = ocrServiceTimeoutMs): Promise<BarcodeScanResult> {
   if (file.contentType !== "inlineData" || file.kind !== "image") {
     return {
@@ -1466,77 +1384,15 @@ async function scanBarcodeWithLocalWorker(file: CompareSourceFile, timeoutMs = o
   });
 }
 
-async function postToPaddleBarcodeService(file: CompareSourceFile, options: { timeoutMs?: number } = {}): Promise<BarcodeScanResult> {
-  if (file.contentType !== "inlineData" || file.kind !== "image") {
-    return {
-      success: false,
-      barcode: null,
-      matched: false,
-      record: null,
-      message: "Barcode scan accepts image files only.",
-    };
-  }
-
-  await ensurePaddleOcrServiceReady();
-
-  const controller = new AbortController();
-  const timeoutMs = Math.max(500, Math.min(ocrServiceTimeoutMs, options.timeoutMs ?? ocrServiceTimeoutMs));
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  const formData = new FormData();
-  const imageBuffer = Buffer.from(file.content, "base64");
-  const imageBlob = new Blob([imageBuffer], { type: file.mimeType || "application/octet-stream" });
-
-  formData.append("file", imageBlob, file.name || "image");
-
-  const startedAt = Date.now();
-  try {
-    const response = await fetch(`${ocrServiceUrl}/barcode`, {
-      method: "POST",
-      body: formData,
-      signal: controller.signal,
-    });
-
-    const elapsedMs = Date.now() - startedAt;
-    if (!response.ok) {
-      if (response.status === 404) {
-        console.warn("[Barcode] OCR service does not expose /barcode yet. Falling back to local OpenCV worker.");
-        return scanBarcodeWithLocalWorker(file, timeoutMs);
-      }
-      throw new Error(await parseOcrServiceError(response));
-    }
-
-    const payload = await response.json();
-    const barcode = typeof payload?.barcode === "string" && payload.barcode.trim()
-      ? payload.barcode.trim()
-      : null;
-
-    const barcodeEngine = payload?.raw?.engine === "zxing-cpp" ? "zxing-cpp" : "opencv";
-    console.log(`[Barcode] engine=${barcodeEngine}-service file="${file.name}" detected=${Boolean(barcode)} elapsed=${elapsedMs}ms`);
-    return {
-      success: Boolean(payload?.success),
-      barcode,
-      type: typeof payload?.type === "string" ? payload.type : null,
-      matched: false,
-      record: null,
-      message: typeof payload?.message === "string"
-        ? payload.message
-        : barcode
-          ? "Barcode detected."
-          : "No barcode detected. Please capture a clearer image.",
-      barcodes: Array.isArray(payload?.barcodes) ? payload.barcodes : [],
-      engine: barcodeEngine,
-      durationMs: typeof payload?.durationMs === "number" ? payload.durationMs : elapsedMs,
-    };
-  } catch (error: any) {
-    if (error?.name === "AbortError") {
-      throw new Error(`Barcode scan timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
-    }
-
-    throw error instanceof Error ? error : new Error(String(error));
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
+const {
+  requestOcr: postToPaddleOcrService,
+  requestBarcode: postToPaddleBarcodeService,
+} = createOcrHttpClient<IntakeRecord>({
+  serviceUrl: ocrServiceUrl,
+  timeoutMs: ocrServiceTimeoutMs,
+  ensureReady: ensurePaddleOcrServiceReady,
+  scanBarcodeLocally: scanBarcodeWithLocalWorker,
+});
 
 const {
   recognizeOcrSnapshot,
