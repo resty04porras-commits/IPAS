@@ -17,6 +17,8 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageOps
 
+from barcode_reader import decode_barcode
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ocr-service")
@@ -198,64 +200,6 @@ def run_ocr(image: Image.Image) -> dict[str, Any]:
         result = model.readtext(processed, detail=1)
     return build_snapshot(result, image.width, image.height, scale)
 
-
-def normalize_barcode_type(value: str | None) -> str | None:
-    if not value:
-        return None
-    return str(value).strip().upper() or None
-
-
-def decode_barcode(image: Image.Image) -> dict[str, Any]:
-    rgb = np.array(image.convert("RGB"))
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    detector = cv2.barcode.BarcodeDetector()
-
-    candidates: list[dict[str, Any]] = []
-
-    try:
-        retval, decoded_info, decoded_type, points = detector.detectAndDecodeWithType(bgr)
-        if retval:
-            for index, value in enumerate(decoded_info or []):
-                text = sanitize_text(value)
-                if not text:
-                    continue
-                barcode_type = None
-                if decoded_type is not None and index < len(decoded_type):
-                    barcode_type = normalize_barcode_type(str(decoded_type[index]))
-                candidates.append({"value": text, "type": barcode_type, "points": points[index].tolist() if points is not None and index < len(points) else None})
-    except Exception:
-        logger.debug("Barcode multi-detect failed; trying single barcode detection.", exc_info=True)
-
-    if not candidates:
-        try:
-            value, points = detector.detectAndDecode(bgr)
-            text = sanitize_text(value)
-            if text:
-                candidates.append({"value": text, "type": None, "points": points.tolist() if points is not None else None})
-        except Exception:
-            logger.debug("Barcode single-detect failed.", exc_info=True)
-
-    if not candidates:
-        return {
-            "success": False,
-            "barcode": None,
-            "type": None,
-            "matched": False,
-            "record": None,
-            "message": "No barcode detected. Please capture a clearer image.",
-            "barcodes": [],
-        }
-
-    primary = candidates[0]
-    return {
-        "success": True,
-        "barcode": primary["value"],
-        "type": primary.get("type"),
-        "matched": False,
-        "record": None,
-        "message": "Barcode detected.",
-        "barcodes": candidates,
-    }
 
 
 def parse_json_field(raw_value: str | None, fallback: Any) -> Any:

@@ -1,3 +1,5 @@
+import type { OcrSourceFile as CompareSourceFile, OcrSnapshot, OcrRecognition, OcrRecognizeOptions } from "../types/ocr.js";
+import type { BarcodeScanResult as ScanResult, BarcodeCandidate } from "../types/barcode.js";
 import type { Request, Response } from "express";
 import type { Multer } from "multer";
 import { writeAuditLog } from "./auditHelper.js";
@@ -9,14 +11,6 @@ import {
   updateAccountabilityForm,
 } from "../database/repositories/accountabilityRepository.js";
 
-type CompareSourceFile = {
-  name: string;
-  kind: "excel" | "pdf" | "image";
-  contentType: "text" | "inlineData";
-  content: string;
-  mimeType: string;
-};
-
 type IntakeRecord = {
   sourceName: string;
   components: string;
@@ -27,49 +21,8 @@ type IntakeRecord = {
   notes?: string;
 };
 
-type BarcodeScanResult = {
-  success: boolean;
-  barcode: string | null;
-  type?: string | null;
-  matched: boolean;
-  record: IntakeRecord | null;
-  message: string;
-  barcodes?: Array<{
-    value: string;
-    type?: string | null;
-    points?: unknown;
-  }>;
-  durationMs?: number;
-};
+type BarcodeScanResult = ScanResult<IntakeRecord>;
 
-
-type OcrBoundingBox = {
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
-};
-
-type OcrLine = {
-  text: string;
-  confidence: number;
-  bbox: OcrBoundingBox;
-};
-
-type OcrWord = {
-  text: string;
-  confidence: number;
-  bbox: OcrBoundingBox;
-};
-
-type OcrSnapshot = {
-  text: string;
-  confidence: number;
-  lines: OcrLine[];
-  words: OcrWord[];
-  width: number;
-  height: number;
-};
 
 type IntakeExtractionResponse = {
   records: IntakeRecord[];
@@ -124,17 +77,14 @@ export interface AccountabilityControllerDependencies {
   ) => IntakeRecord[];
   postToPaddleBarcodeService: (
     file: CompareSourceFile,
+    options?: { timeoutMs?: number },
   ) => Promise<BarcodeScanResult>;
   extractUpstreamErrorMessage: (error: unknown) => string;
   buildPlainTextSnapshot: (text: string) => OcrSnapshot;
-  postToPaddleOcrService: (
+  recognizeOcrDetailed: (
     file: CompareSourceFile,
-    options?: { mode?: string },
-  ) => Promise<{ snapshot?: OcrSnapshot }>;
-  recognizeOcrSnapshotWithLegacyWorker: (
-    file: CompareSourceFile,
-    options?: { mode?: string },
-  ) => Promise<OcrSnapshot>;
+    options?: OcrRecognizeOptions,
+  ) => Promise<OcrRecognition>;
   extractIntakeRecordsResilient: (
     evidenceFiles: CompareSourceFile[],
     referenceRecords?: IntakeRecord[],
@@ -187,8 +137,7 @@ export function createAccountabilityController(
     postToPaddleBarcodeService,
     extractUpstreamErrorMessage,
     buildPlainTextSnapshot,
-    postToPaddleOcrService,
-    recognizeOcrSnapshotWithLegacyWorker,
+    recognizeOcrDetailed,
     extractIntakeRecordsResilient,
     extractIntakeRecordsByBarcode,
     combineExtractionNotes,
@@ -643,27 +592,21 @@ export function createAccountabilityController(
         });
       }
 
-      let snapshot: OcrSnapshot;
-      let engine = "paddle-service";
-      let fallback = false;
-      let serviceError = "";
       const startedAt = Date.now();
-
-      try {
-        const result = await postToPaddleOcrService(preparedFile, {
-          mode: "full",
-        });
-        snapshot = result.snapshot || buildPlainTextSnapshot("");
-      } catch (error) {
-        serviceError = extractUpstreamErrorMessage(error);
-        fallback = true;
-        engine = "legacy-worker";
-        console.warn(
-          `[OCR] /api/ocr-v2 fallback=true error=${serviceError}`,
-        );
-        snapshot = await recognizeOcrSnapshotWithLegacyWorker(preparedFile, {
-          mode: "full",
-        });
+      const [ocrAttempt, barcodeAttempt] = await Promise.allSettled([
+        recognizeOcrDetailed(preparedFile, { mode: "full" }),
+        // Optional enrichment has its own short timeout. Its failure must not
+        // turn a successful OCR read into an error or change OCR confidence.
+        Promise.resolve().then(() => postToPaddleBarcodeService(preparedFile, { timeoutMs: 5000 })),
+      ]);
+      if (ocrAttempt.status === "rejected") throw ocrAttempt.reason;
+      const { snapshot, engine, fallback, primaryError } = ocrAttempt.value;
+      const scan = barcodeAttempt.status === "fulfilled" ? barcodeAttempt.value : null;
+      const barcodeValues: BarcodeCandidate[] = Array.isArray(scan?.barcodes)
+        ? scan.barcodes.filter((entry) => entry && typeof entry.value === "string" && entry.value.trim())
+        : [];
+      if (!barcodeValues.length && scan?.barcode) {
+        barcodeValues.push({ value: scan.barcode, type: scan.type });
       }
 
       console.log(
@@ -679,11 +622,16 @@ export function createAccountabilityController(
         width: snapshot.width,
         height: snapshot.height,
         snapshot,
+        // Decoded data is separate from OCR text. The operator decides whether
+        // a candidate represents an asset tag, serial, product code, or URL.
+        barcodes: barcodeValues,
         raw: {
           engine,
           fallback,
+          barcodeStatus: scan ? (barcodeValues.length ? "decoded" : "not_detected") : "unavailable",
+          ...(scan?.engine ? { barcodeEngine: scan.engine } : {}),
+          ...(primaryError ? { primaryError } : {}),
         },
-        error: serviceError || undefined,
       });
     } catch (error: any) {
       console.error("OCR v2 error:", error);

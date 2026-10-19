@@ -1,3 +1,9 @@
+import type {
+  OcrSourceFile as CompareSourceFile, OcrBBox, OcrLineEntry, OcrSnapshot,
+  OcrRecognizeOptions, OcrBatchProbe, OcrWorkerResult as PaddleOcrWorkerResult,
+} from "./types/ocr.js";
+import { buildPlainTextSnapshot, sanitizeOcrValue, toOcrSnapshot } from "./services/ocr/snapshots.js";
+import { createOcrRecognizer, shouldUseOcrService } from "./services/ocr/recognizer.js";
 import express, { Request } from "express";
 import dns from "node:dns/promises";
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
@@ -38,14 +44,6 @@ import { createCameraSyncRoutes } from "./routes/cameraSyncRoutes.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env"), quiet: true } as any);
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: true, quiet: true } as any);
-
-type CompareSourceFile = {
-  name: string;
-  kind: "excel" | "pdf" | "image";
-  contentType: "text" | "inlineData";
-  content: string;
-  mimeType: string;
-};
 
 type CompareRecord = {
   sn: string;
@@ -99,20 +97,7 @@ type IntakeExtractionResponse = {
 
 type ReferenceRecord = IntakeRecord;
 
-type BarcodeScanResult = {
-  success: boolean;
-  barcode: string | null;
-  type?: string | null;
-  matched: boolean;
-  record: IntakeRecord | null;
-  message: string;
-  barcodes?: Array<{
-    value: string;
-    type?: string | null;
-    points?: unknown;
-  }>;
-  durationMs?: number;
-};
+type BarcodeScanResult = import("./types/barcode.js").BarcodeScanResult<IntakeRecord>;
 
 type AccountabilityFormPayload = {
   employeeName: string;
@@ -219,7 +204,7 @@ const compareModels = Array.from(new Set([
   "gemini-2.5-flash",
   "gemini-2.0-flash",
 ]));
-const OCR_EXTRACTION_VERSION = "ocr-v8-smart-capture-heuristics";
+const OCR_EXTRACTION_VERSION = "ocr-v9-configured-engine";
 
 function readBoundedIntegerEnv(name: string, fallback: number, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
   const parsed = Number.parseInt(process.env[name] || "", 10);
@@ -580,50 +565,6 @@ function getIntakeCacheKey(file: CompareSourceFile): string {
     .digest("hex");
 }
 
-type OcrBBox = {
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
-};
-
-type OcrWordEntry = {
-  text: string;
-  confidence: number;
-  bbox: OcrBBox;
-};
-
-type OcrLineEntry = {
-  text: string;
-  confidence: number;
-  bbox: OcrBBox;
-  words: OcrWordEntry[];
-};
-
-type OcrSnapshot = {
-  text: string;
-  confidence: number;
-  lines: OcrLineEntry[];
-  words: OcrWordEntry[];
-  width: number;
-  height: number;
-};
-
-type OcrRecognizeOptions = {
-  rectangle?: {
-    left: number;
-    top: number;
-    width: number;
-    height: number;
-  };
-  mode?: "full" | "probe";
-};
-
-type OcrBatchProbe = {
-  key: string;
-  rectangle?: OcrRecognizeOptions["rectangle"];
-};
-
 type PaddleOcrRequest = {
   id: string;
   imageBase64: string;
@@ -640,11 +581,6 @@ type PaddleOcrResponse = {
   snapshots?: Record<string, OcrSnapshot>;
   error?: string;
   traceback?: string;
-};
-
-type PaddleOcrWorkerResult = {
-  snapshot?: OcrSnapshot;
-  snapshots?: Record<string, OcrSnapshot>;
 };
 
 type PaddleOcrPendingRequest = {
@@ -766,79 +702,6 @@ const ASSET_TAG_PATTERN_GLOBAL = /\b[A-Z]{1,8}[\s/-]*(?:19|20)\d{2}[\s/-]*[A-Z0-
 const PROPERTY_STICKER_PATTERN = /\bPROPERTY\s+OF\s+LIFEBANK\s+FOUNDATION(?:,?\s*INC\.?)?\b/i;
 const SERIAL_LABEL_PATTERN = /\b(?:SERIAL(?:\s*NO\.?|\s*NUMBER)?|S\/N|SN|SNID)\b/i;
 const BARCODE_LABEL_PATTERN = /\b(?:QR(?:\s*CODE)?|BARCODE)\b/i;
-
-function sanitizeOcrValue(value: string): string {
-  return value
-    .replace(/\r/g, "\n")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function toOcrBbox(rawBbox: any): OcrBBox {
-  return {
-    x0: Number(rawBbox?.x0 || 0),
-    y0: Number(rawBbox?.y0 || 0),
-    x1: Number(rawBbox?.x1 || 0),
-    y1: Number(rawBbox?.y1 || 0),
-  };
-}
-
-function buildPlainTextSnapshot(text: string): OcrSnapshot {
-  const lines = (text || "")
-    .split("\n")
-    .map((line) => sanitizeOcrValue(line))
-    .filter(Boolean)
-    .map((line) => ({
-      text: line,
-      confidence: 0,
-      bbox: { x0: 0, y0: 0, x1: 0, y1: 0 },
-      words: line.split(" ").filter(Boolean).map((word) => ({
-        text: word,
-        confidence: 0,
-        bbox: { x0: 0, y0: 0, x1: 0, y1: 0 },
-      })),
-    }));
-
-  return {
-    text: lines.map((line) => line.text).join("\n"),
-    confidence: 0,
-    lines,
-    words: lines.flatMap((line) => line.words),
-    width: 0,
-    height: 0,
-  };
-}
-
-function toOcrSnapshot(rawSnapshot: any): OcrSnapshot {
-  return {
-    text: sanitizeOcrValue(String(rawSnapshot?.text || "")),
-    confidence: Number(rawSnapshot?.confidence || 0),
-    lines: Array.isArray(rawSnapshot?.lines)
-      ? rawSnapshot.lines.map((line: any) => ({
-          text: sanitizeOcrValue(String(line?.text || "")),
-          confidence: Number(line?.confidence || 0),
-          bbox: toOcrBbox(line?.bbox),
-          words: Array.isArray(line?.words)
-            ? line.words.map((word: any) => ({
-                text: sanitizeOcrValue(String(word?.text || "")),
-                confidence: Number(word?.confidence || 0),
-                bbox: toOcrBbox(word?.bbox),
-              }))
-            : [],
-        }))
-      : [],
-    words: Array.isArray(rawSnapshot?.words)
-      ? rawSnapshot.words.map((word: any) => ({
-          text: sanitizeOcrValue(String(word?.text || "")),
-          confidence: Number(word?.confidence || 0),
-          bbox: toOcrBbox(word?.bbox),
-        }))
-      : [],
-    width: Number(rawSnapshot?.width || 0),
-    height: Number(rawSnapshot?.height || 0),
-  };
-}
 
 function getPaddleOcrLaunchSpec() {
   const configuredPython = process.env.PADDLE_OCR_PYTHON?.trim();
@@ -1273,7 +1136,7 @@ async function submitPaddleOcrRequest(
 function shouldUsePaddleOcrService() {
   // Both engines are served by the Python HTTP OCR service (ocr_api:app).
   // "easyocr" is the current engine; "paddle" is kept for backward compatibility.
-  return ocrEngine === "easyocr" || ocrEngine === "paddle";
+  return shouldUseOcrService(ocrEngine);
 }
 
 let managedOcrServiceProcess: ChildProcessWithoutNullStreams | null = null;
@@ -1522,7 +1385,7 @@ async function postToPaddleOcrService(
   }
 }
 
-async function scanBarcodeWithLocalWorker(file: CompareSourceFile): Promise<BarcodeScanResult> {
+async function scanBarcodeWithLocalWorker(file: CompareSourceFile, timeoutMs = ocrServiceTimeoutMs): Promise<BarcodeScanResult> {
   if (file.contentType !== "inlineData" || file.kind !== "image") {
     return {
       success: false,
@@ -1551,8 +1414,8 @@ async function scanBarcodeWithLocalWorker(file: CompareSourceFile): Promise<Barc
 
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new Error(`Barcode scan timed out after ${Math.round(ocrServiceTimeoutMs / 1000)} seconds.`));
-    }, ocrServiceTimeoutMs);
+      reject(new Error(`Barcode scan timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
+    }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
@@ -1603,7 +1466,7 @@ async function scanBarcodeWithLocalWorker(file: CompareSourceFile): Promise<Barc
   });
 }
 
-async function postToPaddleBarcodeService(file: CompareSourceFile): Promise<BarcodeScanResult> {
+async function postToPaddleBarcodeService(file: CompareSourceFile, options: { timeoutMs?: number } = {}): Promise<BarcodeScanResult> {
   if (file.contentType !== "inlineData" || file.kind !== "image") {
     return {
       success: false,
@@ -1617,7 +1480,8 @@ async function postToPaddleBarcodeService(file: CompareSourceFile): Promise<Barc
   await ensurePaddleOcrServiceReady();
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ocrServiceTimeoutMs);
+  const timeoutMs = Math.max(500, Math.min(ocrServiceTimeoutMs, options.timeoutMs ?? ocrServiceTimeoutMs));
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   const formData = new FormData();
   const imageBuffer = Buffer.from(file.content, "base64");
   const imageBlob = new Blob([imageBuffer], { type: file.mimeType || "application/octet-stream" });
@@ -1636,7 +1500,7 @@ async function postToPaddleBarcodeService(file: CompareSourceFile): Promise<Barc
     if (!response.ok) {
       if (response.status === 404) {
         console.warn("[Barcode] OCR service does not expose /barcode yet. Falling back to local OpenCV worker.");
-        return scanBarcodeWithLocalWorker(file);
+        return scanBarcodeWithLocalWorker(file, timeoutMs);
       }
       throw new Error(await parseOcrServiceError(response));
     }
@@ -1646,7 +1510,8 @@ async function postToPaddleBarcodeService(file: CompareSourceFile): Promise<Barc
       ? payload.barcode.trim()
       : null;
 
-    console.log(`[Barcode] engine=opencv-service file="${file.name}" detected=${Boolean(barcode)} elapsed=${elapsedMs}ms`);
+    const barcodeEngine = payload?.raw?.engine === "zxing-cpp" ? "zxing-cpp" : "opencv";
+    console.log(`[Barcode] engine=${barcodeEngine}-service file="${file.name}" detected=${Boolean(barcode)} elapsed=${elapsedMs}ms`);
     return {
       success: Boolean(payload?.success),
       barcode,
@@ -1659,11 +1524,12 @@ async function postToPaddleBarcodeService(file: CompareSourceFile): Promise<Barc
           ? "Barcode detected."
           : "No barcode detected. Please capture a clearer image.",
       barcodes: Array.isArray(payload?.barcodes) ? payload.barcodes : [],
+      engine: barcodeEngine,
       durationMs: typeof payload?.durationMs === "number" ? payload.durationMs : elapsedMs,
     };
   } catch (error: any) {
     if (error?.name === "AbortError") {
-      throw new Error(`Barcode scan timed out after ${Math.round(ocrServiceTimeoutMs / 1000)} seconds.`);
+      throw new Error(`Barcode scan timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
     }
 
     throw error instanceof Error ? error : new Error(String(error));
@@ -1672,138 +1538,16 @@ async function postToPaddleBarcodeService(file: CompareSourceFile): Promise<Barc
   }
 }
 
-async function recognizeOcrSnapshotWithLegacyWorker(
-  file: CompareSourceFile,
-  options: OcrRecognizeOptions = {}
-): Promise<OcrSnapshot> {
-  if (file.contentType !== "inlineData") {
-    return buildPlainTextSnapshot(file.content || "");
-  }
-
-  const startedAt = Date.now();
-  const result = await submitPaddleOcrRequest({
-    imageBase64: file.content,
-    rectangle: options.rectangle,
-    mode: options.mode || "full",
-  });
-
-  console.log(`[OCR] engine=legacy-worker file="${file.name}" elapsed=${Date.now() - startedAt}ms fallback=false`);
-  return result.snapshot || buildPlainTextSnapshot("");
-}
-
-async function recognizeOcrSnapshot(file: CompareSourceFile, options: OcrRecognizeOptions = {}): Promise<OcrSnapshot> {
-  if (file.contentType !== "inlineData") {
-    return buildPlainTextSnapshot(file.content || "");
-  }
-
-  // Primary: local PaddleOCR worker.
-  try {
-    const startedAt = Date.now();
-    const snapshot = await recognizeOcrSnapshotWithLegacyWorker(file, options);
-    console.log(
-      `[OCR] primary=paddle-worker file="${file.name}" elapsed=${Date.now() - startedAt}ms fallback=false`
-    );
-    return snapshot;
-  } catch (error) {
-    console.warn(
-      `[OCR] primary=paddle-worker file="${file.name}" failed=true error=${extractUpstreamErrorMessage(error)}`
-    );
-  }
-
-  // Fallback: Python HTTP OCR service (currently EasyOCR).
-  if (shouldUsePaddleOcrService()) {
-    try {
-      const startedAt = Date.now();
-      const result = await postToPaddleOcrService(file, {
-        rectangle: options.rectangle,
-        mode: options.mode || "full",
-      });
-      console.log(
-        `[OCR] fallback=easyocr-service file="${file.name}" elapsed=${Date.now() - startedAt}ms`
-      );
-      return result.snapshot || buildPlainTextSnapshot("");
-    } catch (error) {
-      console.warn(
-        `[OCR] fallback=easyocr-service file="${file.name}" failed=true error=${extractUpstreamErrorMessage(error)}`
-      );
-      throw error;
-    }
-  }
-
-  throw new Error("No OCR engine is available.");
-}
-
-async function recognizeOcrSnapshotBatchWithLegacyWorker(
-  file: CompareSourceFile,
-  probes: OcrBatchProbe[]
-): Promise<Record<string, OcrSnapshot>> {
-  if (probes.length === 0) {
-    return {};
-  }
-
-  if (file.contentType !== "inlineData") {
-    const snapshot = buildPlainTextSnapshot(file.content || "");
-    return Object.fromEntries(probes.map((probe) => [probe.key, snapshot]));
-  }
-
-  const result = await submitPaddleOcrRequest({
-    imageBase64: file.content,
-    rectangles: probes,
-    mode: "probe",
-  }, {
-    timeoutMs: paddleOcrProbeRequestTimeoutMs,
-    retries: 0,
-    resetOnTimeout: false,
-  });
-
-  return result.snapshots || {};
-}
-
-async function recognizeOcrSnapshotBatch(file: CompareSourceFile, probes: OcrBatchProbe[]): Promise<Record<string, OcrSnapshot>> {
-  if (probes.length === 0) {
-    return {};
-  }
-
-  if (file.contentType !== "inlineData") {
-    return recognizeOcrSnapshotBatchWithLegacyWorker(file, probes);
-  }
-
-  // Primary: local PaddleOCR worker for regional probes.
-  try {
-    const startedAt = Date.now();
-    const snapshots = await recognizeOcrSnapshotBatchWithLegacyWorker(file, probes);
-    console.log(
-      `[OCR] primary=paddle-worker file="${file.name}" probes=${probes.length} elapsed=${Date.now() - startedAt}ms fallback=false`
-    );
-    return snapshots;
-  } catch (error) {
-    console.warn(
-      `[OCR] primary=paddle-worker file="${file.name}" probes=${probes.length} failed=true error=${extractUpstreamErrorMessage(error)}`
-    );
-  }
-
-  // Fallback: Python HTTP OCR service (currently EasyOCR).
-  if (shouldUsePaddleOcrService()) {
-    try {
-      const startedAt = Date.now();
-      const result = await postToPaddleOcrService(file, {
-        rectangles: probes,
-        mode: "probe",
-      });
-      console.log(
-        `[OCR] fallback=easyocr-service file="${file.name}" probes=${probes.length} elapsed=${Date.now() - startedAt}ms`
-      );
-      return result.snapshots || {};
-    } catch (error) {
-      console.warn(
-        `[OCR] fallback=easyocr-service file="${file.name}" probes=${probes.length} failed=true error=${extractUpstreamErrorMessage(error)}`
-      );
-      throw error;
-    }
-  }
-
-  throw new Error("No OCR engine is available for regional probes.");
-}
+const {
+  recognizeOcrSnapshot,
+  recognizeOcrSnapshotBatch,
+  recognizeOcrDetailed,
+} = createOcrRecognizer({
+  engine: ocrEngine,
+  requestService: postToPaddleOcrService,
+  requestWorker: submitPaddleOcrRequest,
+  probeTimeoutMs: paddleOcrProbeRequestTimeoutMs,
+});
 
 function getMeaningfulOcrLines(text: string): string[] {
   return sanitizeOcrValue(text)
@@ -6629,14 +6373,14 @@ async function extractLiquidationRecord(file: CompareSourceFile): Promise<Liquid
     ocrRemarks = inferLiquidationRemarksFromText(snapshot.text);
     ocrMode = inferLiquidationTransportMode(snapshot.text);
     if (ocrAmount) {
-      ocrNote = "Amount extracted from PaddleOCR.";
+      ocrNote = "Amount extracted from OCR.";
     } else if (snapshot.text.trim()) {
-      ocrNote = "PaddleOCR could not confirm the payable amount. Gemini review was used.";
+      ocrNote = "OCR could not confirm the payable amount. Gemini review was used.";
     } else {
       ocrNote = "No readable OCR text was found in this receipt image.";
     }
   } catch (error) {
-    ocrNote = `PaddleOCR failed for this receipt: ${extractUpstreamErrorMessage(error)}`;
+    ocrNote = `OCR failed for this receipt: ${extractUpstreamErrorMessage(error)}`;
   }
 
   const baseRecord: LiquidationRecord = {
@@ -7489,8 +7233,7 @@ async function startServer() {
     postToPaddleBarcodeService,
     extractUpstreamErrorMessage,
     buildPlainTextSnapshot,
-    postToPaddleOcrService,
-    recognizeOcrSnapshotWithLegacyWorker,
+    recognizeOcrDetailed,
     extractIntakeRecordsResilient,
     extractIntakeRecordsByBarcode,
     combineExtractionNotes,
