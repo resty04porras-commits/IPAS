@@ -1786,12 +1786,12 @@
         if (captureType === "equipment") {
           /* Equipment captures go to Smart Capture.
            *
-           * Strategy: always push to the retry queue first.  The
+           * Use the ready form immediately; otherwise push to the retry queue. The
            * MutationObserver drains the queue as soon as Smart Capture
            * becomes (or is already) the active page.  This handles:
            *   • laptop offline during capture → queue drained when
            *     the user manually opens Smart Capture later.
-           *   • laptop already on Smart Capture → drain fires in <1 s.
+           *   • laptop already on Smart Capture → inject without a timer.
            *   • multiple pending captures → processed one at a time
            *     (2 s gap) so React can handle each image in sequence.
            *
@@ -1800,11 +1800,15 @@
            * rendering and lose every time the laptop wasn't already on
            * Smart Capture. */
           if (!injectedEventIds.has(entry.eventId)) {
-            pendingEquipmentRetries.push({ entry: entry, card: card });
-            setCardStatus(card, "pending");
-            /* If Smart Capture is already active, drain right away */
-            clearTimeout(smartCaptureRetryTimer);
-            smartCaptureRetryTimer = setTimeout(drainEquipmentRetries, 500);
+            if (pendingEquipmentRetries.length === 0 && isSmartCaptureActive() && injectIntoUploadZone(entry)) {
+              injectedEventIds.add(entry.eventId);
+              setCardStatus(card, "applied");
+            } else {
+              pendingEquipmentRetries.push({ entry: entry, card: card });
+              setCardStatus(card, "pending");
+              clearTimeout(smartCaptureRetryTimer);
+              smartCaptureRetryTimer = setTimeout(drainEquipmentRetries, 500);
+            }
           }
         } else {
           /* Non-equipment (tickets etc.): keep original navigateForCapture flow */
