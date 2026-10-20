@@ -2,6 +2,7 @@ import type {
   OcrSourceFile as CompareSourceFile, OcrBBox, OcrLineEntry, OcrSnapshot, OcrRecognizeOptions,
 } from "./types/ocr.js";
 import { buildPlainTextSnapshot, sanitizeOcrValue } from "./services/ocr/snapshots.js";
+import { createBarcodeWorker } from "./services/ocr/barcodeWorker.js";
 import { createOcrWorkerPool } from "./services/ocr/workerPool.js";
 import { createOcrServiceLifecycle } from "./services/ocr/serviceLifecycle.js";
 import { createOcrHttpClient } from "./services/ocr/httpClient.js";
@@ -672,30 +673,6 @@ const PROPERTY_STICKER_PATTERN = /\bPROPERTY\s+OF\s+LIFEBANK\s+FOUNDATION(?:,?\s
 const SERIAL_LABEL_PATTERN = /\b(?:SERIAL(?:\s*NO\.?|\s*NUMBER)?|S\/N|SN|SNID)\b/i;
 const BARCODE_LABEL_PATTERN = /\b(?:QR(?:\s*CODE)?|BARCODE)\b/i;
 
-function getBarcodeScanLaunchSpec() {
-  const configuredPython = process.env.BARCODE_SCAN_PYTHON?.trim() || process.env.PADDLE_OCR_PYTHON?.trim();
-  if (configuredPython) {
-    return {
-      command: configuredPython,
-      args: ["-u", barcodeScanWorkerScriptPath],
-    };
-  }
-
-  if (process.platform === "win32") {
-    const windowsVenvPython = path.join(ocrServiceDirectory, ".venv", "Scripts", "python.exe");
-    return {
-      command: fs.existsSync(windowsVenvPython) ? windowsVenvPython : "python",
-      args: ["-u", barcodeScanWorkerScriptPath],
-    };
-  }
-
-  const posixVenvPython = path.join(ocrServiceDirectory, ".venv", "bin", "python");
-  return {
-    command: fs.existsSync(posixVenvPython) ? posixVenvPython : "python3",
-    args: ["-u", barcodeScanWorkerScriptPath],
-  };
-}
-
 const {
   submit: submitPaddleOcrRequest,
   prewarm: prewarmPaddleOcrWorker,
@@ -730,86 +707,12 @@ const {
   describeError: extractUpstreamErrorMessage,
 });
 
-async function scanBarcodeWithLocalWorker(file: CompareSourceFile, timeoutMs = ocrServiceTimeoutMs): Promise<BarcodeScanResult> {
-  if (file.contentType !== "inlineData" || file.kind !== "image") {
-    return {
-      success: false,
-      barcode: null,
-      matched: false,
-      record: null,
-      message: "Barcode scan accepts image files only.",
-    };
-  }
-
-  const { command, args } = getBarcodeScanLaunchSpec();
-  const startedAt = Date.now();
-
-  return new Promise<BarcodeScanResult>((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        PYTHONIOENCODING: "utf-8",
-        PYTHONUTF8: "1",
-        PYTHONNOUSERSITE: "1",
-      },
-    });
-    let stdout = "";
-    let stderr = "";
-
-    const timeout = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`Barcode scan timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
-    }, timeoutMs);
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-      const raw = stdout.trim();
-      if (!raw) {
-        reject(new Error(stderr.trim() || `Barcode worker exited with code ${code ?? "unknown"}.`));
-        return;
-      }
-
-      try {
-        const payload = JSON.parse(raw);
-        const barcode = typeof payload?.barcode === "string" && payload.barcode.trim()
-          ? payload.barcode.trim()
-          : null;
-        console.log(`[Barcode] engine=opencv-worker file="${file.name}" detected=${Boolean(barcode)} elapsed=${Date.now() - startedAt}ms`);
-        resolve({
-          success: Boolean(payload?.success),
-          barcode,
-          type: typeof payload?.type === "string" ? payload.type : null,
-          matched: false,
-          record: null,
-          message: typeof payload?.message === "string"
-            ? payload.message
-            : barcode
-              ? "Barcode detected."
-              : "No barcode detected. Please capture a clearer image.",
-          barcodes: Array.isArray(payload?.barcodes) ? payload.barcodes : [],
-        });
-      } catch (error) {
-        reject(new Error(`Could not parse barcode worker output. ${extractUpstreamErrorMessage(error)} ${stderr}`.trim()));
-      }
-    });
-
-    child.stdin.end(JSON.stringify({
-      imageBase64: file.content,
-      mimeType: file.mimeType,
-    }));
-  });
-}
+const { scan: scanBarcodeWithLocalWorker } = createBarcodeWorker<IntakeRecord>({
+  workerScriptPath: barcodeScanWorkerScriptPath,
+  serviceDirectory: ocrServiceDirectory,
+  timeoutMs: ocrServiceTimeoutMs,
+  describeError: extractUpstreamErrorMessage,
+});
 
 const {
   requestOcr: postToPaddleOcrService,
