@@ -3,6 +3,7 @@ import type {
   OcrRecognizeOptions, OcrBatchProbe, OcrWorkerResult as PaddleOcrWorkerResult,
 } from "./types/ocr.js";
 import { buildPlainTextSnapshot, sanitizeOcrValue, toOcrSnapshot } from "./services/ocr/snapshots.js";
+import { createOcrServiceLifecycle } from "./services/ocr/serviceLifecycle.js";
 import { createOcrHttpClient } from "./services/ocr/httpClient.js";
 import { createOcrRecognizer, shouldUseOcrService } from "./services/ocr/recognizer.js";
 import express, { Request } from "express";
@@ -1140,168 +1141,19 @@ function shouldUsePaddleOcrService() {
   return shouldUseOcrService(ocrEngine);
 }
 
-let managedOcrServiceProcess: ChildProcessWithoutNullStreams | null = null;
-let ocrServiceStartupPromise: Promise<void> | null = null;
-let managedOcrServiceCleanupRegistered = false;
-let stoppingManagedOcrService = false;
-
-function getOcrServiceListenTarget() {
-  try {
-    const parsed = new URL(ocrServiceUrl);
-    return {
-      host: parsed.hostname || "127.0.0.1",
-      port: parsed.port || (parsed.protocol === "https:" ? "443" : "80"),
-    };
-  } catch {
-    return { host: "127.0.0.1", port: "8001" };
-  }
-}
-
-function resolveOcrServicePython() {
-  const configured = (process.env.OCR_SERVICE_PYTHON || "").trim();
-  if (configured) {
-    return configured;
-  }
-
-  const windowsVenvPython = path.join(ocrServiceDirectory, ".venv", "Scripts", "python.exe");
-  if (fs.existsSync(windowsVenvPython)) {
-    return windowsVenvPython;
-  }
-
-  const posixVenvPython = path.join(ocrServiceDirectory, ".venv", "bin", "python");
-  if (fs.existsSync(posixVenvPython)) {
-    return posixVenvPython;
-  }
-
-  return process.platform === "win32" ? "python" : "python3";
-}
-
-async function isPaddleOcrServiceHealthy(timeoutMs = ocrServiceProbeTimeoutMs): Promise<boolean> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${ocrServiceUrl}/health`, { signal: controller.signal });
-    if (!response.ok) {
-      return false;
-    }
-    const payload = await response.json().catch(() => null);
-    return payload?.status === "ok" && payload?.modelLoaded !== false;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-function logManagedOcrServiceOutput(prefix: string, chunk: Buffer) {
-  for (const line of chunk.toString("utf8").split(/\r?\n/)) {
-    if (line.trim()) {
-      appendRotatingLog("ocr.log", `${new Date().toISOString()} ${prefix}: ${line}\n`);
-      console.log(`[OCR service] ${prefix}: ${line}`);
-    }
-  }
-}
-
-function startManagedPaddleOcrService() {
-  if (managedOcrServiceProcess || !ocrServiceAutoStart) {
-    return;
-  }
-
-  const { host, port } = getOcrServiceListenTarget();
-  const pythonExecutable = resolveOcrServicePython();
-  const args = ["-m", "uvicorn", "ocr_api:app", "--host", host, "--port", port];
-
-  console.log(`[OCR] Starting Python EasyOCR service: ${pythonExecutable} ${args.join(" ")}`);
-  stoppingManagedOcrService = false;
-  managedOcrServiceProcess = spawn(pythonExecutable, args, {
-    cwd: ocrServiceDirectory,
-    env: {
-      ...process.env,
-      PYTHONUTF8: "1",
-    },
-    windowsHide: true,
-  });
-
-  managedOcrServiceProcess.stdout.on("data", (chunk: Buffer) => logManagedOcrServiceOutput("stdout", chunk));
-  managedOcrServiceProcess.stderr.on("data", (chunk: Buffer) => logManagedOcrServiceOutput("stderr", chunk));
-  managedOcrServiceProcess.on("error", (error) => {
-    console.warn(`[OCR] Python EasyOCR service failed to start: ${error.message}`);
-    managedOcrServiceProcess = null;
-  });
-  managedOcrServiceProcess.on("exit", (code, signal) => {
-    console.warn(`[OCR] Python EasyOCR service exited code=${code ?? "unknown"} signal=${signal ?? "none"}`);
-    managedOcrServiceProcess = null;
-    ocrServiceStartupPromise = null;
-    if (!stoppingManagedOcrService && ocrServiceAutoStart && shouldUsePaddleOcrService()) {
-      setTimeout(() => {
-        ensurePaddleOcrServiceReady().catch((error) => {
-          console.warn(`[OCR] Python EasyOCR service recovery failed: ${extractUpstreamErrorMessage(error)}`);
-        });
-      }, 2000);
-    }
-  });
-
-  registerManagedOcrServiceCleanup();
-}
-
-function stopManagedPaddleOcrService() {
-  if (managedOcrServiceProcess && !managedOcrServiceProcess.killed) {
-    stoppingManagedOcrService = true;
-    managedOcrServiceProcess.kill();
-  }
-}
-
-function registerManagedOcrServiceCleanup() {
-  if (managedOcrServiceCleanupRegistered) {
-    return;
-  }
-
-  managedOcrServiceCleanupRegistered = true;
-  process.once("exit", stopManagedPaddleOcrService);
-  process.once("SIGINT", () => {
-    stopManagedPaddleOcrService();
-    process.exit(130);
-  });
-  process.once("SIGTERM", () => {
-    stopManagedPaddleOcrService();
-    process.exit(143);
-  });
-}
-
-async function ensurePaddleOcrServiceReady() {
-  if (!shouldUsePaddleOcrService()) {
-    return;
-  }
-
-  if (await isPaddleOcrServiceHealthy()) {
-    return;
-  }
-
-  if (!ocrServiceAutoStart) {
-    throw new Error(`Python EasyOCR service is not available at ${ocrServiceUrl}.`);
-  }
-
-  if (!ocrServiceStartupPromise) {
-    ocrServiceStartupPromise = (async () => {
-      startManagedPaddleOcrService();
-
-      const deadline = Date.now() + ocrServiceStartupProbeTimeoutMs;
-      while (Date.now() < deadline) {
-        if (await isPaddleOcrServiceHealthy()) {
-          console.log(`[OCR] Python EasyOCR service is ready at ${ocrServiceUrl}.`);
-          return;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-
-      throw new Error(
-        `Python EasyOCR service did not become ready within ${Math.round(ocrServiceStartupProbeTimeoutMs / 1000)} seconds.`
-      );
-    })();
-  }
-
-  await ocrServiceStartupPromise;
-}
+const {
+  isHealthy: isPaddleOcrServiceHealthy,
+  ensureReady: ensurePaddleOcrServiceReady,
+} = createOcrServiceLifecycle({
+  serviceUrl: ocrServiceUrl,
+  serviceDirectory: ocrServiceDirectory,
+  autoStart: ocrServiceAutoStart,
+  probeTimeoutMs: ocrServiceProbeTimeoutMs,
+  startupProbeTimeoutMs: ocrServiceStartupProbeTimeoutMs,
+  shouldUseService: shouldUsePaddleOcrService,
+  appendRotatingLog,
+  describeError: extractUpstreamErrorMessage,
+});
 
 async function scanBarcodeWithLocalWorker(file: CompareSourceFile, timeoutMs = ocrServiceTimeoutMs): Promise<BarcodeScanResult> {
   if (file.contentType !== "inlineData" || file.kind !== "image") {
