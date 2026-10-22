@@ -1,0 +1,352 @@
+/* All rules are scoped to the identified login surface. No global dark theme. */
+[data-ipas-login] {
+  --ipas-login-accent: 102, 132, 169;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 100vh;
+  min-height: 100svh;
+  padding: 48px 20px 72px;
+  background:
+    radial-gradient(ellipse at 12% 18%, rgba(var(--ipas-login-accent), 0.18), transparent 48%),
+    radial-gradient(ellipse at 88% 84%, rgba(37, 76, 114, 0.18), transparent 46%),
+    linear-gradient(140deg, #101a2a 0%, #080e19 52%, #0c1624 100%) !important;
+  color: #e9effa;
+}
+
+[data-ipas-login-palette="plum"] { --ipas-login-accent: 140, 109, 145; }
+[data-ipas-login-palette="warm"] { --ipas-login-accent: 160, 131, 91; }
+[data-ipas-login-palette="rain"] { --ipas-login-accent: 96, 132, 163; }
+[data-ipas-login-palette="copper"] { --ipas-login-accent: 154, 120, 93; }
+[data-ipas-login-palette="halloween"] { --ipas-login-accent: 163, 112, 68; }
+[data-ipas-login-palette="evergreen"] { --ipas-login-accent: 86, 137, 122; }
+
+[data-ipas-login-scene],
+[data-ipas-login-scene] > span,
+[data-ipas-login] .ipas-login-atmosphere {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+[data-ipas-login-scene] {
+  z-index: 0;
+  overflow: hidden;
+  background: #090f1a;
+}
+[data-ipas-login-scene]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 28%, rgba(2, 5, 10, 0.22) 100%);
+}
+[data-ipas-login] .ipas-login-landscape {
+  inset: -3%;
+  background:
+    radial-gradient(ellipse at 18% 28%, rgba(var(--ipas-login-accent), 0.3), transparent 52%),
+    radial-gradient(ellipse at 86% 78%, #1c3449, transparent 55%),
+    linear-gradient(145deg, #122034, #090e19 65%, #172838);
+  background-position: center;
+  background-size: cover;
+  animation: ipas-login-camera 80s ease-in-out infinite alternate;
+  will-change: transform;
+}
+[data-ipas-login-palette="halloween"] .ipas-login-landscape {
+  background-image: url("/assets/ipas-login-halloween.png?v=20261022-seasons3");
+}
+[data-ipas-login-scene-kind="christmas"] .ipas-login-landscape {
+  background-image: url("/assets/ipas-login-christmas.png?v=20261022-seasons3");
+}
+[data-ipas-login][data-ipas-login-scene-kind="christmas"] .ipas-login-light {
+  background:
+    radial-gradient(ellipse at 12% 45%, rgba(247, 183, 73, 0.2), transparent 35%),
+    radial-gradient(ellipse at 89% 55%, rgba(238, 177, 85, 0.19), transparent 34%);
+}
+[data-ipas-login][data-ipas-login-scene-kind="sunset"] .ipas-login-light {
+  background: conic-gradient(from 105deg at 12% 18%, transparent, rgba(219, 159, 67, 0.13), transparent 21%, rgba(219, 159, 67, 0.08), transparent 42%);
+}
+[data-ipas-login][data-ipas-login-scene-kind="festival"] .ipas-login-light {
+  background:
+    radial-gradient(ellipse at 12% 65%, rgba(209, 127, 56, 0.24), transparent 36%),
+    radial-gradient(ellipse at 90% 25%, rgba(147, 92, 148, 0.21), transparent 38%);
+}
+[data-ipas-login][data-ipas-login-scene-kind="rose"] .ipas-login-light {
+  background:
+    radial-gradient(ellipse at 12% 65%, rgba(172, 89, 120, 0.22), transparent 38%),
+    radial-gradient(ellipse at 90% 25%, rgba(135, 83, 121, 0.2), transparent 40%);
+}
+[data-ipas-login] .ipas-login-clouds {
+  inset: -10% -20% 35%;
+  background:
+    radial-gradient(ellipse at 22% 40%, rgba(126, 148, 169, 0.24), transparent 36%),
+    radial-gradient(ellipse at 73% 30%, rgba(117, 139, 157, 0.28), transparent 42%);
+  filter: blur(18px);
+  animation: ipas-login-cloud-drift 12s ease-in-out infinite alternate;
+}
+[data-ipas-login] .ipas-login-mist-far {
+  inset: 43% -25% -8%;
+  background:
+    radial-gradient(ellipse at 20% 70%, rgba(154, 175, 185, 0.25), transparent 38%),
+    radial-gradient(ellipse at 69% 42%, rgba(160, 181, 195, 0.28), transparent 43%);
+  filter: blur(14px);
+  animation: ipas-login-fog-far 10s ease-in-out infinite alternate;
+}
+[data-ipas-login] .ipas-login-mist-near {
+  inset: 65% -35% -15%;
+  background:
+    radial-gradient(ellipse at 30% 55%, rgba(177, 190, 194, 0.26), transparent 44%),
+    radial-gradient(ellipse at 82% 80%, rgba(159, 179, 192, 0.32), transparent 39%);
+  filter: blur(12px);
+  animation: ipas-login-fog-near 8s ease-in-out infinite alternate;
+}
+[data-ipas-login] .ipas-login-light {
+  inset: 0;
+  background: radial-gradient(ellipse at 12% 65%, rgba(var(--ipas-login-accent), 0.12), transparent 28%);
+  animation: ipas-login-light-breathe 7s ease-in-out infinite alternate;
+}
+[data-ipas-login-palette="halloween"] .ipas-login-light {
+  background:
+    radial-gradient(ellipse 10% 20% at 6% 60%, rgba(244, 137, 43, 0.32), transparent 75%),
+    radial-gradient(ellipse 10% 18% at 87% 45%, rgba(242, 158, 61, 0.2), transparent 80%);
+  animation: ipas-login-lantern 2.3s ease-in-out infinite;
+}
+[data-ipas-login] .ipas-login-atmosphere { width: 100%; height: 100%; }
+[data-ipas-login] .ipas-login-atmosphere[hidden] { display: none !important; }
+[data-ipas-login-palette="halloween"] [data-ipas-login-fog="canvas"] .ipas-login-clouds,
+[data-ipas-login-palette="halloween"] [data-ipas-login-fog="canvas"] .ipas-login-mist-far,
+[data-ipas-login-palette="halloween"] [data-ipas-login-fog="canvas"] .ipas-login-mist-near { visibility: hidden; }
+[data-ipas-login] .ipas-login-bough { display: none; }
+[data-ipas-login-palette="halloween"] .ipas-login-bough {
+  display: block;
+  inset: -45px -45px auto auto;
+  width: min(48vw, 680px);
+  height: min(36vw, 510px);
+  background: url("/assets/ipas-login-branch.png?v=20261022-seasons3") right top / contain no-repeat;
+  transform-origin: 100% 0;
+  animation: ipas-login-bough-sway 6.5s ease-in-out infinite alternate;
+  opacity: 0.85;
+}
+[data-ipas-login] .ipas-login-weather { display: none; }
+[data-ipas-login] .ipas-login-candles { display: none; }
+[data-ipas-login-effect="candles"] .ipas-login-candles { display: block; }
+[data-ipas-login-effect="candles"] .ipas-login-candles > span {
+  position: absolute;
+  left: 8%;
+  bottom: 9%;
+  width: 15px;
+  height: 55px;
+  background: linear-gradient(90deg, #8f8273, #ddd0b2 45%, #9d8c73);
+  border-radius: 3px 3px 2px 2px;
+  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.3);
+}
+[data-ipas-login-effect="candles"] .ipas-login-candles > span:nth-child(2) { left: 87%; height: 42px; bottom: 12%; }
+[data-ipas-login-effect="candles"] .ipas-login-candles > span:nth-child(3) { left: 91%; height: 64px; bottom: 9%; }
+[data-ipas-login-effect="candles"] .ipas-login-candles > span::before {
+  content: "";
+  position: absolute;
+  width: 13px;
+  height: 23px;
+  bottom: calc(100% - 1px);
+  left: 1px;
+  background: radial-gradient(ellipse at 50% 70%, #fff8d2, #edb04c 48%, rgba(223, 127, 37, 0) 73%);
+  border-radius: 65% 35% 45% 45%;
+  box-shadow: 0 -4px 26px rgba(242, 185, 82, 0.3);
+  animation: ipas-login-lantern 2.3s ease-in-out infinite;
+}
+[data-ipas-login-effect="candles"] .ipas-login-candles > span:nth-child(2)::before { animation-delay: -0.6s; }
+[data-ipas-login-effect="candles"] .ipas-login-candles > span:nth-child(3)::before { animation-delay: -1.4s; }
+[data-ipas-login-palette="rain"] .ipas-login-weather {
+  display: block;
+  inset: -80px;
+  opacity: 0.18;
+  background: repeating-linear-gradient(108deg, transparent 0 53px, rgba(176, 203, 224, 0.34) 54px, transparent 55px 95px);
+  animation: ipas-login-rain 1.8s linear infinite;
+}
+[data-ipas-login-palette="evergreen"] .ipas-login-weather,
+[data-ipas-login-palette="slate"] .ipas-login-weather {
+  display: block;
+  opacity: 0.4;
+  background:
+    radial-gradient(circle at 12% 22%, #e6d8b6 0 1px, transparent 2px),
+    radial-gradient(circle at 81% 31%, #e6d8b6 0 1px, transparent 2px),
+    radial-gradient(circle at 24% 71%, #e6d8b6 0 1px, transparent 2px),
+    radial-gradient(circle at 89% 77%, #e6d8b6 0 1px, transparent 2px);
+  animation: ipas-login-light-breathe 5s ease-in-out infinite alternate;
+}
+
+/* Fill wider screens with the complete photograph, without crop or side fill.
+   Moving fog and branches provide motion without zooming beyond the frame. */
+@media (min-width: 768px) {
+  [data-ipas-login-palette="halloween"] .ipas-login-landscape {
+    inset: 0;
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    animation: none;
+    will-change: auto;
+  }
+}
+
+@keyframes ipas-login-camera {
+  from { transform: scale(1.025) translate3d(-0.4%, 0, 0); }
+  to { transform: scale(1.065) translate3d(0.5%, -0.6%, 0); }
+}
+@keyframes ipas-login-cloud-drift {
+  from { transform: translate3d(-6%, -2%, 0); opacity: 0.55; }
+  to { transform: translate3d(7%, 2%, 0); opacity: 0.95; }
+}
+@keyframes ipas-login-fog-far {
+  from { transform: translate3d(-6%, 2%, 0); opacity: 0.6; }
+  to { transform: translate3d(8%, -2%, 0); opacity: 1; }
+}
+@keyframes ipas-login-fog-near {
+  from { transform: translate3d(8%, 3%, 0); opacity: 0.5; }
+  to { transform: translate3d(-9%, -3%, 0); opacity: 0.9; }
+}
+@keyframes ipas-login-light-breathe {
+  from { opacity: 0.5; }
+  to { opacity: 1; }
+}
+@keyframes ipas-login-lantern {
+  0%, 100% { opacity: 0.55; }
+  18% { opacity: 0.95; }
+  33% { opacity: 0.62; }
+  55% { opacity: 1; }
+  74% { opacity: 0.7; }
+}
+@keyframes ipas-login-bough-sway {
+  from { transform: rotate(-2deg) translate3d(0, -1%, 0); }
+  to { transform: rotate(3.5deg) translate3d(-2%, 2%, 0); }
+}
+@keyframes ipas-login-rain {
+  from { transform: translate3d(0, -45px, 0); }
+  to { transform: translate3d(-15px, 45px, 0); }
+}
+
+[data-ipas-login-motion="paused"] [data-ipas-login-scene] *,
+[data-ipas-login-motion="paused"] [data-ipas-login-scene] *::before,
+[data-ipas-login-motion="paused"] [data-ipas-login-scene] *::after {
+  animation-play-state: paused !important;
+}
+[data-ipas-login-motion-toggle] {
+  position: absolute;
+  z-index: 2;
+  bottom: 18px;
+  left: 24px;
+  min-height: 34px;
+  padding: 6px 12px;
+  background: rgba(6, 12, 22, 0.65);
+  border: 1px solid rgba(173, 193, 216, 0.24);
+  border-radius: 8px;
+  color: #c6d2e2;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+[data-ipas-login-motion-toggle]:hover { background: rgba(18, 30, 46, 0.9); }
+[data-ipas-login-motion-toggle]:focus-visible { outline: 2px solid #b8d0ff; outline-offset: 3px; }
+
+[data-ipas-login-card] {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 424px;
+  padding: 36px 32px 28px;
+  background: linear-gradient(155deg, #172235, #111b2c) !important;
+  border: 1px solid rgba(159, 184, 215, 0.17) !important;
+  border-radius: 20px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38), 0 1px 0 rgba(255, 255, 255, 0.035) inset !important;
+  color-scheme: dark;
+}
+
+[data-ipas-login-card] h1 {
+  margin: 0;
+  color: #edf3ff !important;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.4;
+  letter-spacing: -0.025em;
+  text-align: center;
+}
+
+[data-ipas-login-card] p { color: #9aaac0 !important; }
+[data-ipas-login-card] > div:first-child { margin-bottom: 30px; }
+[data-ipas-login-card] > div:first-child > div:has(img) {
+  width: 64px;
+  height: 64px;
+  margin-bottom: 20px;
+  border-color: rgba(255, 255, 255, 0.2);
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+[data-ipas-login-card] label {
+  color: #b6c4d7 !important;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+}
+
+[data-ipas-login-card] input {
+  min-height: 46px;
+  background: #0c1524 !important;
+  border: 1px solid #2a3950 !important;
+  border-radius: 10px;
+  color: #e7eefb !important;
+  caret-color: #9fbfff;
+  font-size: 14px;
+  box-shadow: none;
+}
+
+[data-ipas-login-card] input::placeholder { color: #71839c; opacity: 1; }
+[data-ipas-login-card] input:focus {
+  border-color: #6c9cff !important;
+  outline: 2px solid rgba(108, 156, 255, 0.25);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+[data-ipas-login-card] input:-webkit-autofill,
+[data-ipas-login-card] input:-webkit-autofill:hover,
+[data-ipas-login-card] input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #e7eefb;
+  -webkit-box-shadow: 0 0 0 1000px #0c1524 inset;
+}
+
+[data-ipas-login-submit] {
+  min-height: 46px;
+  margin-top: 20px !important;
+  background: #2563eb !important;
+  border: 1px solid rgba(138, 176, 255, 0.22);
+  border-radius: 10px;
+  color: #fff !important;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.015em;
+  transform: none !important;
+  box-shadow: 0 6px 18px rgba(14, 48, 118, 0.25) !important;
+}
+[data-ipas-login-submit]:hover { background: #3474f0 !important; }
+[data-ipas-login-submit]:focus-visible { outline: 2px solid #b8d0ff; outline-offset: 3px; }
+
+[data-ipas-login-card] > p:last-child {
+  margin-top: 24px;
+  color: #8294ad !important;
+  font-size: 10px;
+  line-height: 1.6;
+}
+[data-ipas-login-card] > p:last-child span { color: #b8c8df !important; }
+[data-ipas-login-card] .bg-red-50 { background: #321c29 !important; border-color: #6f3348 !important; color: #ffbbca !important; }
+[data-ipas-login-card] .bg-red-50 p { color: inherit !important; }
+
+@media (max-width: 480px) {
+  [data-ipas-login] { padding: 36px 18px 70px; }
+  [data-ipas-login-palette="halloween"] .ipas-login-landscape { background-position: 8% center; }
+  [data-ipas-login-scene-kind="christmas"] .ipas-login-landscape { background-position: 5% center; }
+  [data-ipas-login-palette="halloween"] .ipas-login-bough { width: 72vw; height: 56vw; inset: -25px -35px auto auto; }
+  [data-ipas-login-motion-toggle] { left: 18px; bottom: 16px; }
+  [data-ipas-login] .ipas-login-clouds { filter: none; }
+  [data-ipas-login-card] { padding: 30px 24px 24px; border-radius: 18px; }
+  [data-ipas-login-card] h1 { font-size: 19px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-ipas-login-card], [data-ipas-login-card] * { transition: none !important; }
+}
