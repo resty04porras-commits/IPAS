@@ -42,7 +42,9 @@ import type {
 } from "./types/ocr.js";
 import { buildPlainTextSnapshot, sanitizeOcrValue } from "./services/ocr/snapshots.js";
 import { createLiquidationTextParser } from "./services/liquidationText.js";
-import { createStructuredAiClient, extractUpstreamErrorMessage, isGeminiRateLimit, isGeminiUnavailable, isInvalidStructuredResponse } from "./services/structuredAi.js";
+import { extractUpstreamErrorMessage, isGeminiRateLimit, isGeminiUnavailable, isInvalidStructuredResponse, InvalidStructuredResponseError } from "./services/structuredAi.js";
+import { createCloudVisionClient } from "./services/cloudVision.js";
+import { validateVisionDraft, mergeVisionDraft, needsIntakeVision, prepareLocalVisionRecord } from "./services/visionValidation.js";
 import { buildSourceParts, prepareUploadedFileForComparison } from "./services/uploadedSources.js";
 import { createBarcodeWorker } from "./services/ocr/barcodeWorker.js";
 import { createOcrWorkerPool } from "./services/ocr/workerPool.js";
@@ -130,14 +132,18 @@ type LiquidationExtractionResponse = {
 
 type LiquidationExportFormat = "xlsx" | "pdf";
 
-const preferredCompareModel = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-const compareModels = Array.from(new Set([
-  preferredCompareModel,
-  "gemini-2.5-flash",
-  "gemini-2.0-flash",
-]));
-const { callStructuredOutput: callGeminiForStructuredOutput } = createStructuredAiClient({ models: compareModels });
-const OCR_EXTRACTION_VERSION = "ocr-v9-configured-engine";
+const preferredCompareModel = process.env.GEMINI_MODEL?.trim() || "gemini-3.5-flash-lite";
+const cloudAiEnabled = (process.env.IPAS_AI_MODE || "local-only").trim().toLowerCase() === "hybrid";
+const { callStructuredOutput: callGeminiForStructuredOutput } = createCloudVisionClient({
+  enabled: cloudAiEnabled,
+  apiKey: () => process.env.GEMINI_API_KEY,
+  model: preferredCompareModel,
+  budgetPath: path.join(os.homedir(), ".local", "state", "ipas", "cloud-ai-budget.json"),
+  timeoutMs: readBoundedIntegerEnv("IPAS_AI_TIMEOUT_MS", 20000, 1000, 45000),
+  requestsPerMinute: readBoundedIntegerEnv("IPAS_AI_REQUESTS_PER_MINUTE", 5, 0, 15),
+  requestsPer24Hours: readBoundedIntegerEnv("IPAS_AI_REQUESTS_PER_24H", 10, 0, 1000),
+});
+const OCR_EXTRACTION_VERSION = "ocr-v10-reviewed-vision";
 
 function readBoundedIntegerEnv(name: string, fallback: number, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
   const parsed = Number.parseInt(process.env[name] || "", 10);
@@ -149,6 +155,7 @@ function readBoundedIntegerEnv(name: string, fallback: number, minimum: number, 
 }
 
 const intakeExtractionCache = new Map<string, IntakeRecord>();
+const intakeBarcodeCache = new Map<string, Promise<BarcodeScanResult>>();
 const projectRoot = fs.existsSync(path.join(process.cwd(), "server.ts"))
   ? process.cwd()
   : fs.existsSync(path.join(process.cwd(), "..", "server.ts"))
@@ -209,6 +216,7 @@ const localOcrParallelism = readBoundedIntegerEnv(
   paddleOcrWorkerPoolSize
 );
 const intakeAiFallbackEnabled = /^(1|true|yes)$/i.test(process.env.INTAKE_AI_FALLBACK_ENABLED || "true"); // Enabled by default
+const intakeAiMaxImages = readBoundedIntegerEnv("INTAKE_AI_MAX_IMAGES_PER_REQUEST", 2, 0, 3);
 
 function resolveRuntimeMode() {
   const lifecycleEvent = (process.env.npm_lifecycle_event || "").toLowerCase();
@@ -438,6 +446,8 @@ function normalizeModelCandidate(value: string): string {
 function extractBrandAndModelCandidates(lines: string[]): string[] {
   const candidates: string[] = [];
   const normalizedLines = lines
+    // A serial/product label and its value must not become a model token.
+    .map(line => line.replace(/\b(?:SERIAL(?:\s*NO\.?|\s*NUMBER)?|S\s*\/\s*N|SNID|SN|EAN(?:[-_ ]?\d+)?|UPC|BARCODE)\b.*$/i, ""))
     .map((line) => sanitizeDescriptionFragment(line))
     .filter(Boolean);
 
@@ -2374,8 +2384,8 @@ Rules:
 3. components: identify the equipment type from the device shape, brand label, or visible text. Use UPPERCASE. Choose from: SYSTEM UNIT, MONITOR, PRINTER, KEYBOARD, MOUSE, UPS, CPU ADAPTER, LAPTOP ADAPTER, LAPTOP, SCANNER, WEBCAM, ROUTER, SWITCH.
 4. description: read the brand name and model number from the MANUFACTURER label on the device (e.g., DELL OPTIPLEX 3080, LENOVO THINKPAD E14, HP LASERJET PRO M404N, ASUS NUC PRO). Use the brand alone if model is unclear.
 5. hardwareId: read the INTERNAL COMPANY PROPERTY TAG — a printed sticker with code format PREFIX-YEAR-CODE (e.g., CPU-2024-AB1, MTR-2025-XY1). Prefixes: CPU, MTR, MON, KBD, MSE, SCN, PTR, UPS, CAD, LAD, LTP, PRN. This tag is SEPARATE from the manufacturer label. NEVER use the manufacturer serial number as hardwareId.
-6. serial: read the MANUFACTURER SERIAL NUMBER from the factory label. It is labeled "Serial Number", "Serial No.", "S/N", "SN", or "SNID". Read each character carefully:
-   - Common confusions: 0 vs O, 1 vs I vs L, 5 vs S, 8 vs B, 2 vs Z — pick the correct character based on context.
+6. serial: read the MANUFACTURER SERIAL NUMBER from the factory label. It is labeled "Serial Number", "Serial No.", "S/N", or "SN". SNID, EAN, UPC, model and version numbers are separate fields and must not be used as the manufacturer serial.
+   - Preserve 0 vs O, 1 vs I vs L, 5 vs S, 8 vs B and 2 vs Z exactly as printed. If a character cannot be read, leave the identifier empty; never guess or complete it.
    - NEVER copy the hardwareId into serial. They are always different values.
    - If "S/N" label is not visible, leave serial empty rather than guessing.
 7. remarks: use "New Accountability" unless the image shows a different status.
@@ -2404,7 +2414,10 @@ Rules:
     }
   );
 
-  const normalized = Array.isArray(parsed) ? parsed.map(normalizeIntakeRecord) : [];
+  if (!Array.isArray(parsed) || parsed.length !== evidenceFiles.length) {
+    throw new InvalidStructuredResponseError("Vision returned an unexpected number of equipment records.", "");
+  }
+  const normalized = parsed.map(normalizeIntakeRecord);
 
   return evidenceFiles.map((file, index) => {
     const extracted = normalized[index];
@@ -2423,7 +2436,7 @@ Rules:
 
     return {
       ...extracted,
-      sourceName: extracted.sourceName || file.name,
+      sourceName: file.name,
       remarks: extracted.remarks || "New Accountability",
     };
   });
@@ -2597,6 +2610,17 @@ async function extractLiquidationRecordsFromEvidence(
   };
 }
 
+async function scanIntakeBarcode(file: CompareSourceFile): Promise<BarcodeScanResult> {
+  const key = getIntakeCacheKey(file);
+  const existing = intakeBarcodeCache.get(key);
+  if (existing) return existing;
+  const pending = postToPaddleBarcodeService(file, { timeoutMs: Math.min(ocrServiceTimeoutMs, 15000) });
+  intakeBarcodeCache.set(key, pending);
+  pending.catch(() => { if (intakeBarcodeCache.get(key) === pending) intakeBarcodeCache.delete(key); });
+  if (intakeBarcodeCache.size > 100) intakeBarcodeCache.delete(intakeBarcodeCache.keys().next().value!);
+  return pending;
+}
+
 async function extractIntakeRecordsByBarcode(
   evidenceFiles: CompareSourceFile[],
   referenceRecords: ReferenceRecord[] = []
@@ -2613,7 +2637,7 @@ async function extractIntakeRecordsByBarcode(
 
     let scan: BarcodeScanResult;
     try {
-      scan = await postToPaddleBarcodeService(file);
+      scan = await scanIntakeBarcode(file);
     } catch (error) {
       console.warn(`[Barcode] scan failed for "${file.name}". Continuing with OCR fallback.`, error);
       continue;
@@ -2659,184 +2683,112 @@ async function extractIntakeRecordsResilient(
 ): Promise<IntakeExtractionResponse> {
   let cached = 0;
   let extracted = 0;
-  let manual = 0;
-  let localOcr = 0;
+  let aiAttempted = 0;
   let aiExtracted = 0;
+  const rawRecords: IntakeRecord[] = new Array(evidenceFiles.length);
+  const work: Array<{
+    file: CompareSourceFile; index: number; key: string;
+    local: IntakeRecord; barcodes: import("./types/barcode.js").BarcodeCandidate[]; ocrText: string;
+  }> = [];
+  const cloudMessages = new Set<string>();
 
-  // Phase 1: Check cache and partition files by strategy
-  const filesToProcess: CompareSourceFile[] = [];
-  const processingStrategy: Map<string, "cached" | "ocr" | "ai" | "manual"> = new Map();
-  const cacheKeyMap: Map<string, string> = new Map();
-  const cachedResults: Map<string, IntakeRecord> = new Map();
-
-  for (const file of evidenceFiles) {
-    const cacheKey = getIntakeCacheKey(file);
-    cacheKeyMap.set(file.name, cacheKey);
-    const cachedRecord = intakeExtractionCache.get(cacheKey);
-
-    if (cachedRecord) {
+  // Keep positional identity even when two different uploads have the same filename.
+  evidenceFiles.forEach((file, index) => {
+    const key = getIntakeCacheKey(file);
+    const existing = intakeExtractionCache.get(key);
+    if (existing) {
       cached += 1;
-      cachedResults.set(file.name, { ...cachedRecord, sourceName: file.name });
-      processingStrategy.set(file.name, "cached");
+      rawRecords[index] = { ...existing, sourceName: file.name };
     } else {
-      filesToProcess.push(file);
-    }
-  }
-
-  // Phase 2: Parallel OCR extraction for all uncached files
-  const ocrResults: Map<string, { full: OcrSnapshot; probes: IntakeProbeSnapshot[] }> = new Map();
-  const ocrErrors: Map<string, Error> = new Map();
-
-  await mapWithConcurrency(filesToProcess, localOcrParallelism, async (file) => {
-    try {
-      const snapshots = await extractRegionalOcrSnapshots(file);
-      ocrResults.set(file.name, snapshots);
-    } catch (error) {
-      ocrErrors.set(file.name, error instanceof Error ? error : new Error(String(error)));
+      work.push({ file, index, key, local: normalizeIntakeRecord({ sourceName: file.name }), barcodes: [], ocrText: "" });
     }
   });
 
-  // Phase 3: Build local records from OCR and partition for AI fallback
-  const localRecords: Map<string, IntakeRecord> = new Map();
-  const filesNeedingAi: CompareSourceFile[] = [];
-  const filesWithPartialOcr: Map<string, IntakeRecord> = new Map();
-
-  for (const file of filesToProcess) {
-    const snapshots = ocrResults.get(file.name) || { full: buildPlainTextSnapshot(""), probes: [] };
-    const ocrError = ocrErrors.get(file.name);
-    const localRecord = buildIntakeRecordFromOcr(file.name, snapshots);
-    const localFieldCount = countPopulatedIntakeFields(localRecord);
-    const localRecordIsUsable = localFieldCount > 0 && hasUsableIntakeExtraction(localRecord);
-
-    if (localFieldCount > 0 && hasStrongIntakeExtraction(localRecord)) {
-      localRecords.set(file.name, localRecord);
-      processingStrategy.set(file.name, "ocr");
-    } else if (localRecordIsUsable) {
-      localRecords.set(file.name, {
-        ...localRecord,
-        notes: combineExtractionNotes(
-          localRecord.notes,
-          "Posted immediately from stable local OCR so the asset rows can be reviewed without waiting for slower fallback recovery."
-        ),
-      });
-      processingStrategy.set(file.name, "ocr");
-    } else if (!intakeAiFallbackEnabled && localFieldCount === 0 && ocrError) {
-      processingStrategy.set(file.name, "manual");
-    } else if (ocrError || localFieldCount === 0) {
-      filesNeedingAi.push(file);
-      filesWithPartialOcr.set(file.name, localRecord);
-    } else if (localFieldCount > 0) {
-      filesWithPartialOcr.set(file.name, localRecord);
-      filesNeedingAi.push(file);
-    }
-  }
-
-  // Phase 4: Batch Gemini extraction for files needing AI (up to 10 per batch)
-  const BATCH_SIZE = 10;
-  const aiRecords: Map<string, IntakeRecord> = new Map();
-  const aiErrors: Map<string, Error> = new Map();
-
-  for (let i = 0; i < filesNeedingAi.length; i += BATCH_SIZE) {
-    const batch = filesNeedingAi.slice(i, i + BATCH_SIZE);
-
-    try {
-      const records = await extractIntakeRecordsWithGemini(batch);
-
-      batch.forEach((file, index) => {
-        const aiRecord = records[index];
-        const normalizedRecord = normalizeIntakeRecord(aiRecord);
-        const partialLocal = filesWithPartialOcr.get(file.name);
-        const localFieldCount = partialLocal ? countPopulatedIntakeFields(partialLocal) : 0;
-
-        const mergedRecord = localFieldCount > 0 && partialLocal
-          ? mergeLocalAndAiIntakeRecord(file.name, partialLocal, normalizedRecord)
-          : {
-              ...normalizedRecord,
-              sourceName: normalizedRecord.sourceName || file.name,
-            };
-
-        aiRecords.set(file.name, mergedRecord);
-        processingStrategy.set(file.name, "ai");
-      });
-    } catch (error: any) {
-      const err = error instanceof Error ? error : new Error(String(error));
-
-      batch.forEach((file) => {
-        aiErrors.set(file.name, err);
-      });
-    }
-  }
-
-  // Phase 5: Build final result set
-  const rawRecords: IntakeRecord[] = [];
-
-  for (const file of evidenceFiles) {
-    const strategy = processingStrategy.get(file.name);
-    const cacheKey = cacheKeyMap.get(file.name)!;
-
-    if (strategy === "cached") {
-      rawRecords.push(cachedResults.get(file.name)!);
-    } else if (strategy === "ocr") {
-      extracted += 1;
-      localOcr += 1;
-      const record = localRecords.get(file.name)!;
-      intakeExtractionCache.set(cacheKey, record);
-      rawRecords.push(record);
-    } else if (strategy === "ai") {
-      extracted += 1;
-      aiExtracted += 1;
-      const record = aiRecords.get(file.name)!;
-      intakeExtractionCache.set(cacheKey, record);
-      rawRecords.push(record);
-    } else {
-      manual += 1;
-
-      const aiError = aiErrors.get(file.name);
-      const partialLocal = filesWithPartialOcr.get(file.name);
-      const localFieldCount = partialLocal ? countPopulatedIntakeFields(partialLocal) : 0;
-
-      if (localFieldCount > 0 && partialLocal && aiError) {
-        const record = {
-          ...partialLocal,
-          notes: combineExtractionNotes(
-            partialLocal.notes,
-            "Partial local PaddleOCR extraction was kept because AI-assisted recovery was unavailable."
-          ),
-        };
-        intakeExtractionCache.set(cacheKey, record);
-        rawRecords.push(record);
-      } else {
-        const fallbackReason = aiError
-          ? isGeminiRateLimit(aiError)
-            ? "AI quota was unavailable. Enter the asset details manually."
-            : isGeminiUnavailable(aiError)
-              ? "AI extraction is temporarily unavailable. Enter the asset details manually."
-              : aiError?.message?.includes("GEMINI_API_KEY")
-              ? "AI extraction is not configured. Enter the asset details manually."
-              : "Automatic extraction could not complete. Enter the asset details manually."
-          : "Local OCR could not read this image. Enter the asset details manually.";
-
-        rawRecords.push(buildManualIntakeFallback(file.name, fallbackReason));
+  // Both local readers run before any cloud assistance. Barcode lookup later reuses this scan.
+  await mapWithConcurrency(work, localOcrParallelism, async item => {
+    const [ocr, barcode] = await Promise.allSettled([
+      extractRegionalOcrSnapshots(item.file),
+      item.file.kind === "image" && item.file.contentType === "inlineData"
+        ? scanIntakeBarcode(item.file) : Promise.resolve(null),
+    ]);
+    const snapshots = ocr.status === "fulfilled" ? ocr.value : { full: buildPlainTextSnapshot(""), probes: [] };
+    if (barcode.status === "fulfilled" && barcode.value) {
+      item.barcodes = [...(barcode.value.barcodes || [])];
+      if (barcode.value.barcode && !item.barcodes.some(candidate => candidate.value === barcode.value!.barcode)) {
+        item.barcodes.push({ value: barcode.value.barcode, type: barcode.value.type });
       }
     }
+    item.ocrText = [snapshots.full.text, ...snapshots.probes.map(probe => probe.snapshot.text)].join("\n");
+    item.local = prepareLocalVisionRecord(buildIntakeRecordFromOcr(item.file.name, snapshots), item.barcodes, item.ocrText);
+    item.local.notes = item.local.notes?.replaceAll("PaddleOCR", "OCR");
+    if (ocr.status === "rejected") {
+      item.local.notes = combineExtractionNotes(item.local.notes, "Local OCR could not complete. Review the original image.");
+    }
+  });
+
+  for (const item of work) {
+    let record = item.local;
+    let cacheable = true;
+    if (needsIntakeVision(record)) {
+      if (cloudAiEnabled && intakeAiFallbackEnabled && aiAttempted < intakeAiMaxImages) {
+        aiAttempted += 1;
+        try {
+          // One image per call avoids large batch uploads and ambiguous filename assignments.
+          const [proposal] = await extractIntakeRecordsWithGemini([item.file]);
+          const validation = validateVisionDraft(proposal, { observedRecord: item.local, barcodes: item.barcodes, ocrText: item.ocrText });
+          const merged = mergeVisionDraft(item.local, validation);
+          const proposalText = merged.issues.length > 0
+            ? ["components", "description", "hardwareId", "serial"].map(field => `${field}: ${validation.proposal[field as keyof typeof validation.proposal] || "(unreadable)"}`).join("; ")
+            : "";
+          record = {
+            ...merged.record,
+            sourceName: item.file.name,
+            notes: combineExtractionNotes(item.local.notes, validation.proposal.notes,
+              "Gemini-assisted draft; compare the fields with the original image before saving or export.",
+              merged.requiresReview ? `[Vision review required] ${merged.issues.map(issue => issue.message).join(" ")} Proposed values: ${proposalText}` : ""),
+          };
+          aiExtracted += 1;
+        } catch (error: any) {
+          cacheable = false;
+          const reason = error?.code === "AI_TIMEOUT" ? "Cloud Vision timed out."
+            : isGeminiRateLimit(error) ? "Cloud Vision quota or the local request budget is unavailable."
+            : "Cloud Vision is unavailable or returned incomplete data.";
+          cloudMessages.add(reason);
+          record = { ...record, notes: combineExtractionNotes(record.notes, reason, "Local OCR was retained. Review or complete the fields manually.") };
+        }
+      } else {
+        const reason = !cloudAiEnabled || !intakeAiFallbackEnabled
+          ? "Cloud assistance is disabled; the local OCR draft was retained."
+          : "The cloud-assistance image limit for this scan was reached; the local OCR draft was retained.";
+        cloudMessages.add(reason);
+        record = { ...record, notes: combineExtractionNotes(record.notes, reason) };
+      }
+    }
+    if (countPopulatedIntakeFields(record) > 0) extracted += 1;
+    else record = buildManualIntakeFallback(item.file.name, combineExtractionNotes(record.notes, "Enter unreadable fields manually; no identifiers were guessed."));
+    rawRecords[item.index] = record;
+    // Failed AI calls remain retryable; successful drafts retain their review notes in cache.
+    if (cacheable) {
+      intakeExtractionCache.set(item.key, record);
+      if (intakeExtractionCache.size > 200) intakeExtractionCache.delete(intakeExtractionCache.keys().next().value!);
+    }
   }
 
-  const usedFallback = manual > 0;
-  const hasReferenceAlignment = referenceRecords.length > 0;
-  const alignedRecords = alignRecordsToReferenceBatch(rawRecords, referenceRecords);
-  const records = dedupeIntakeRecords(alignedRecords);
-
+  const manual = rawRecords.filter(record => needsIntakeVision(record) || record.notes?.includes("[Vision review required]")).length;
+  const records = dedupeIntakeRecords(alignRecordsToReferenceBatch(rawRecords, referenceRecords));
   return {
     records,
     summary: {
-      requested: evidenceFiles.length,
-      extracted,
-      cached,
-      manual,
-      usedFallback,
-      message: usedFallback
-        ? `Scanned${hasReferenceAlignment ? " and aligned to the reference document" : ""} with local OCR. ${manual} image${manual === 1 ? "" : "s"} still need manual review.`
-        : `Scanned ${localOcr} image${localOcr === 1 ? "" : "s"} with local PaddleOCR${aiExtracted > 0 ? ` and ${aiExtracted} with AI fallback` : ""}${hasReferenceAlignment ? ". The rows were aligned to the reference accountability document." : "."}`,
+      requested: evidenceFiles.length, extracted, cached, manual,
+      usedFallback: aiAttempted > 0 || manual > 0,
+      message: [
+        `Prepared ${records.length} accountability row${records.length === 1 ? "" : "s"} with local OCR and barcode reading.`,
+        aiExtracted ? `Gemini assisted ${aiExtracted} image${aiExtracted === 1 ? "" : "s"}.` : "",
+        manual ? `${manual} image${manual === 1 ? "" : "s"} need review before saving or export.` : "Verify the values against the original images before saving or export.",
+        ...cloudMessages,
+        ...rawRecords.filter(record => record.notes?.includes("[Vision review required]")).map(record => `${record.sourceName}: ${record.notes}`),
+        referenceRecords.length ? "Reference alignment was applied; reference values are not independent physical evidence." : "",
+      ].filter(Boolean).join(" "),
     },
   };
 }
