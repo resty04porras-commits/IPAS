@@ -1,4 +1,6 @@
 import type { Request, Response } from "express";
+import crypto from "node:crypto";
+import type { CaptureUploadFile, CaptureUploadReceipt } from "./cameraSyncController.js";
 import { writeAuditLog } from "./auditHelper.js";
 import {
   createDocument,
@@ -35,6 +37,7 @@ export type DocumentRepositoryControllerDependencies = {
   getSafeFileName: (fileName: string) => string;
   getFileName: (filePath: string) => string;
   getRepoMimeType: (fileName: string) => string;
+  prepareCaptureUpload?: (req: Request, files: CaptureUploadFile[]) => Promise<() => Promise<CaptureUploadReceipt>>;
 };
 
 export function createDocumentRepositoryController(
@@ -369,6 +372,23 @@ export function createDocumentRepositoryController(
 
     try {
       const normalizedTargetPath = normalizeNextcloudPath(targetPath);
+      let finishCaptureUpload: (() => Promise<CaptureUploadReceipt>) | undefined;
+      let captureCleanup: CaptureUploadReceipt | undefined;
+      if (dependencies.prepareCaptureUpload) {
+        try {
+          // Only the final bytes at each destination path remain on storage
+          // when a batch includes duplicate filenames. Do not clear overwritten photos.
+          const savedByName = new Map<string, CaptureUploadFile>();
+          for (const file of files) {
+            const fileName = getSafeFileName(file.originalname);
+            savedByName.set(fileName, { fileName,
+              sha256: crypto.createHash("sha256").update(await readFile(file.path)).digest("hex") });
+          }
+          finishCaptureUpload = await dependencies.prepareCaptureUpload(req, [...savedByName.values()]);
+        } catch {
+          captureCleanup = { status: "retained", warning: "Files uploaded, but captures were kept because cleanup could not be prepared. Use Clear captured photos after checking the saved files." };
+        }
+      }
       const { url, username, password } = resolveNextcloudConfig({
         url: nextcloudUrl,
         username: nextcloudUsername,
@@ -427,15 +447,25 @@ export function createDocumentRepositoryController(
         );
 
         const fileBuffer = await readFile(file.path);
-        await client.putFileContents(remoteFilePath, fileBuffer, {
+        const stored = await client.putFileContents(remoteFilePath, fileBuffer, {
           overwrite: true,
         });
+        if (stored === false) throw new Error("Storage did not confirm saving the file. Captures were kept.");
 
         console.log(`Successfully uploaded: ${remoteFilePath}`);
       }
 
+      if (finishCaptureUpload) {
+        try { captureCleanup = await finishCaptureUpload(); }
+        catch {
+          // The remote files already succeeded. Never report this as an upload
+          // failure or delete their records just because local cleanup failed.
+          captureCleanup = { status: "retained", warning: "Files uploaded successfully, but capture cleanup failed. Your captures and saved files were kept. Use Clear captured photos to retry cleanup." };
+        }
+      }
       return res.json({
         success: true,
+        ...(captureCleanup ? { captureCleanup } : {}),
         message:
           `Successfully uploaded ${files.length} files to ${normalizedTargetPath}`,
       });

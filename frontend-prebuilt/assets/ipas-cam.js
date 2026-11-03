@@ -435,7 +435,7 @@
       description: fields.description || "",
       hardwareId:  fields.hardwareId  || "",
       serial:      fields.serial      || "",
-      remarks:     fields.remarks     || "New Accountability",
+      remarks:     fields.remarks     || "",
       notes:       "",
     };
     try {
@@ -707,6 +707,7 @@
 
     /* Track which button was last tapped so the upload is tagged correctly */
     var pendingCaptureType = "";
+    var pendingEquipment = null;
 
     var toast = document.createElement("div");
     toast.id        = "ipas-cam-toast";
@@ -753,7 +754,7 @@
       reader.readAsDataURL(file);
     }
 
-    function uploadImage(imageData, fileName, mimeType, captureType) {
+    function uploadImage(imageData, fileName, mimeType, captureType, equipment) {
       return fetch("/api/cam/push", {
         method: "POST",
         credentials: "include",
@@ -764,6 +765,7 @@
           fileName: fileName,
           mimeType: mimeType,
           captureType: captureType || "",
+          ...equipment,
         }),
       }).then(function (r) {
         if (!r.ok) return r.json().then(function (d) { return Promise.reject(d.error || r.status); });
@@ -775,8 +777,8 @@
       if (uploading || !offlineQueue.length || !navigator.onLine) return;
       uploading = true;
       var item = offlineQueue[0];
-      uploadImage(item.imageData, item.fileName, item.mimeType, item.captureType)
-        .then(function () { offlineQueue.shift(); uploading = false; flushQueue(); })
+      uploadImage(item.imageData, item.fileName, item.mimeType, item.captureType, item.equipment)
+        .then(function (result) { if (item.captureType === "equipment") window.__ipasEquipmentUnits?.saved(item.file, result); offlineQueue.shift(); uploading = false; flushQueue(); })
         .catch(function () { uploading = false; });
     }
 
@@ -821,6 +823,12 @@
       // Capture the pending type before removing the input — it is set by the
       // button handler and cleared after the upload is dispatched.
       var captureType = pendingCaptureType;
+      var equipment = captureType === "equipment" ? pendingEquipment : null;
+      if (equipment && window.__ipasEquipmentUnits && !window.__ipasEquipmentUnits.reserveFiles([file], equipment)) {
+        handlingChange = false;
+        showToast("This unit already has four photos. Choose a new unit, or remove an unneeded photo.", "error");
+        window.__ipasEquipmentUnits.afterCapture(equipment, { next: () => openCamera("equipment") }); return;
+      }
 
       // Remove the current input from DOM immediately.
       // Crucially: do NOT create a replacement yet.  A new input is only
@@ -841,10 +849,16 @@
       showToast("Compressing " + toastLabel + "…", "uploading");
       compressImage(file, function (imageData, mimeType) {
         showToast("Sending to desktop…", "uploading");
-        uploadImage(imageData, fileName, mimeType, captureType)
+        uploadImage(imageData, fileName, mimeType, captureType, equipment)
           .then(function (data) {
             handlingChange = false;
             pendingCaptureType = "";
+            if (captureType === "equipment") {
+              window.__ipasEquipmentUnits?.saved(file, data);
+              window.__ipasEquipmentUnits?.afterCapture(Object.assign({}, equipment, data), {
+                continue: chosen => openCamera("equipment", chosen), next: () => openCamera("equipment"),
+              });
+            }
             if (data && data.duplicate) { showToast("Already uploaded.", "success"); }
             else {
               var dest = captureType === "equipment" ? " → Smart Capture" :
@@ -856,13 +870,23 @@
             handlingChange = false;
             // Keep fk in capturedFileKeys — the offline queue will retry.
             console.warn("[ipas-cam] push failed:", err);
-            offlineQueue.push({ imageData: imageData, fileName: fileName, mimeType: mimeType, captureType: captureType });
+            offlineQueue.push({ imageData: imageData, fileName: fileName, mimeType: mimeType, captureType: captureType, equipment: equipment, file: file });
+            if (captureType === "equipment") window.__ipasEquipmentUnits?.afterCapture(equipment, {
+              continue: chosen => openCamera("equipment", chosen), next: () => openCamera("equipment"),
+            });
             showToast("Saved. Will retry when online.", "error");
           });
       });
     }
 
-    function openCamera(captureType) {
+    function openCamera(captureType, equipment) {
+      if (captureType === "equipment" && !equipment && window.__ipasEquipmentUnits) {
+        window.__ipasEquipmentUnits.choose(chosen => openCamera(captureType, chosen)); return;
+      }
+      pendingEquipment = captureType === "equipment" ? equipment : null;
+      if (pendingEquipment && window.__ipasEquipmentUnits && !window.__ipasEquipmentUnits.progress(pendingEquipment).remaining) {
+        window.__ipasEquipmentUnits.afterCapture(pendingEquipment, { next: () => openCamera("equipment") }); return;
+      }
       pendingCaptureType = captureType;
       if (!fileInput) {
         fileInput = makeCamInput();
@@ -932,7 +956,7 @@
       "Defective Asset",
       "Spare Asset",
     ];
-    var remarksOptionsHtml = "";
+    var remarksOptionsHtml = '<option value="">Select remarks</option>';
     for (var ri = 0; ri < remarksOptions.length; ri++) {
       remarksOptionsHtml += '<option value="' + esc(remarksOptions[ri]) + '">' + esc(remarksOptions[ri]) + '</option>';
     }
@@ -1061,6 +1085,8 @@
      * Drained automatically when Smart Capture opens (MutationObserver). */
     var pendingEquipmentRetries = []; // [{entry, card}]
     var injectedEventIds        = new Set();  // dedup: eventIds already applied
+    var deletedCaptureIds       = new Set();
+    var entriesById             = new Map();
     var smartCaptureRetryTimer  = null;
     var smartCaptureObserver    = null;
 
@@ -1110,7 +1136,7 @@
       if (remarksOptions.indexOf(raw) !== -1) {
         return { option: raw, staff: "" };
       }
-      return { option: "New Accountability", staff: "" };
+      return { option: "", staff: "" };
     }
 
     function updateRemarksStaffInput(selectEl, staffEl) {
@@ -1128,7 +1154,7 @@
     }
 
     function getRemarksValue(selectEl, staffEl) {
-      var option = selectEl.value || "New Accountability";
+      var option = selectEl.value || "";
       var staff = String(staffEl.value || "").trim();
       return isTransferRemark(option) && staff ? option + " " + staff : option;
     }
@@ -1400,6 +1426,9 @@
       }
       pendingEquipmentRetries = [];
       injectedEventIds        = new Set();
+      deletedCaptureIds.clear();
+      entriesById.clear();
+      window.removeEventListener("ipas-cam-capture-deleted", removeDesktopCapture);
       var cards = panelBody.querySelectorAll(".ipas-cam-card");
       for (var ci = 0; ci < cards.length; ci++) {
         if (cards[ci].parentNode) cards[ci].parentNode.removeChild(cards[ci]);
@@ -1586,6 +1615,19 @@
 
     /* ── inject into a hidden React image file-input ─────────────── */
     function injectIntoHiddenImageInput(file) {
+      // During menu transitions an outgoing page can still own an image input.
+      // Use Smart Capture's exact input or retry after its camera control mounts.
+      if (isSmartCaptureActive()) {
+        var captureCamera = document.querySelector("ipas-smart-capture-camera");
+        var captureInput = captureCamera && captureCamera.inputs && captureCamera.inputs.upload;
+        if (!captureInput || !captureInput.isConnected) return false;
+        try {
+          var captureTransfer = new DataTransfer(); captureTransfer.items.add(file);
+          captureInput.files = captureTransfer.files;
+          captureInput.dispatchEvent(new Event("change", { bubbles: true }));
+          return true;
+        } catch (_) { return false; }
+      }
       var inputs = Array.from(document.querySelectorAll('input[type="file"]'))
         .filter(function (inp) {
           if (inp.disabled) return false;
@@ -1631,6 +1673,7 @@
 
     /* ── main injection entry-point (3-tier) ─────────────────────── */
     function injectIntoUploadZone(entry) {
+      if (deletedCaptureIds.has(entry.eventId)) return true;
       try {
         window.dispatchEvent(new CustomEvent("ipas-cam-capture", { detail: entry }));
       } catch (_) {}
@@ -1648,6 +1691,7 @@
       }
 
       var captureType = entry.captureType || "";
+      if (captureType === "equipment") window.__ipasEquipmentUnits?.markFiles([file], entry);
       if (captureType === "equipment" && dispatchSmartCaptureHandoff(entry)) {
         console.log("[ipas-cam] handed equipment capture to Smart Capture state");
         return true;
@@ -1709,8 +1753,36 @@
       return false;
     }
 
+    function removeDesktopCapture(event) {
+      var detail = event.detail || {};
+      if (detail.empId && String(detail.empId) !== String(currentEmpId)) return;
+      if (!detail.eventId) return;
+      deletedCaptureIds.add(detail.eventId);
+      seenEventIds.add(detail.eventId);
+      pendingEquipmentRetries = pendingEquipmentRetries.filter(item => item.entry.eventId !== detail.eventId);
+      var entry = entriesById.get(detail.eventId);
+      if (entry) {
+        var fp = fingerprint(entry.imageData);
+        seenFingerprints.delete(fp);
+        delete imageDetailsCache[fp];
+        try { localStorage.removeItem(DET_PREFIX + fp); } catch (_) {}
+      }
+      entriesById.delete(detail.eventId);
+      if (currentEntry && currentEntry.eventId === detail.eventId) closeLightbox();
+      panelBody.querySelectorAll(".ipas-cam-card").forEach(function (card) {
+        if (card.dataset.id !== detail.eventId) return;
+        card.remove();
+        newCount = Math.max(0, newCount - 1);
+      });
+      if (!panelBody.querySelector(".ipas-cam-card") && emptyDiv) emptyDiv.style.display = "";
+      updateBadge();
+    }
+    window.addEventListener("ipas-cam-capture-deleted", removeDesktopCapture);
+
     /* ── add a card (double-deduped) ────────────────────────────── */
     function addCard(entry) {
+      if (deletedCaptureIds.has(entry.eventId)) return;
+      entriesById.set(entry.eventId, entry);
       if (seenEventIds.has(entry.eventId)) return;
 
       var fp = fingerprint(entry.imageData);
@@ -1767,18 +1839,24 @@
       /* × dismiss */
       card.querySelector(".cam-dismiss-btn").addEventListener("click", function (e) {
         e.stopPropagation();
+        var button = e.currentTarget;
+        button.disabled = true;
         fetch("/api/cam/pending/" + encodeURIComponent(entry.eventId) + "?empId=" + encodeURIComponent(currentEmpId), {
           method: "DELETE",
           credentials: "include",
           headers: { Accept: "application/json" },
-        }).catch(function () {});
-        card.classList.add("cam-card-removing");
-        setTimeout(function () {
-          if (card.parentNode) card.parentNode.removeChild(card);
-          if (!panelBody.querySelector(".ipas-cam-card") && emptyDiv) {
-            emptyDiv.style.display = "";
-          }
-        }, 250);
+        }).then(function (response) {
+          if (!response.ok) throw new Error("Deletion failed");
+          return response.json();
+        }).then(function (result) {
+          if (!result.success) throw new Error("Deletion not confirmed");
+          window.dispatchEvent(new CustomEvent("ipas-cam-capture-deleted", { detail: {
+            eventId: entry.eventId, fileName: entry.fileName, captureType: entry.captureType, empId: currentEmpId,
+          } }));
+        }).catch(function () {
+          button.disabled = false;
+          showNotify("The saved photo could not be removed. Check the connection and retry.");
+        });
       });
 
       /* auto-route then inject after React renders the target tab. */
@@ -1890,6 +1968,9 @@
         try {
           var msg = JSON.parse(e.data);
           if (msg.type === "capture") addCard(msg);
+          if (msg.type === "deleted") window.dispatchEvent(new CustomEvent("ipas-cam-capture-deleted", {
+            detail: Object.assign({}, msg, { empId: currentEmpId }),
+          }));
         } catch (_) {}
       };
 
@@ -2130,26 +2211,30 @@
     return normalizeName(detail.captureId) || normalizeName(detail.sourceName);
   }
 
-  function componentKey(component, fallback) {
-    var name = normalizeName(component);
-    return name ? "component:" + name.toLowerCase() : "image:" + fallback;
-  }
-
   function mergeDisplayRowsByComponent() {
     var grouped = new Map();
     var savedRows = Array.from(rows.values()).sort(function (a, b) {
       return (a.savedOrder || 0) - (b.savedOrder || 0);
     });
+    if (window.__ipasEquipmentUnits) return window.__ipasEquipmentUnits.merge(savedRows);
 
     savedRows.forEach(function (detail) {
-      var key = componentKey(detail.components, detailKey(detail));
+      // Two monitors with different identifiers are two assets. Component name
+      // alone must never let the later photo overwrite the earlier unit.
+      var key = detail.hardwareId || detail.serial
+        ? [normalizeName(detail.components).toLowerCase(), normalizeName(detail.hardwareId), normalizeName(detail.serial)].join("|")
+        : "image:" + detailKey(detail);
       var group = grouped.get(key) || {
         components: "",
         description: "",
         hardwareId: "",
         serial: "",
-        remarks: ""
+        remarks: "",
+        captureIds: [],
+        rowKeys: []
       };
+      group.captureIds.push(detail.captureId);
+      group.rowKeys.push(detailKey(detail));
 
       ["components", "description", "hardwareId", "serial", "remarks"].forEach(function (field) {
         var value = normalizeName(detail[field]);
@@ -2172,7 +2257,9 @@
         hardwareId: detail.hardwareId || "",
         serial: detail.serial || "",
         remarks: detail.remarks || "",
-        notes: ""
+        notes: detail.notes || "",
+        equipmentType: detail.equipmentType,
+        equipmentUnitId: detail.equipmentUnitId
       };
     });
   };
@@ -2188,8 +2275,8 @@
         var cardText = textOf(node);
         if (
           cardText.indexOf("Captured Images") !== -1 &&
-          cardText.indexOf("Attach More Images") !== -1 &&
-          cardText.indexOf("Add More from Camera") !== -1
+          ((cardText.indexOf("Attach More Images") !== -1 && cardText.indexOf("Add More from Camera") !== -1) ||
+            (node.classList.contains("rounded-3xl") && node.classList.contains("border")))
         ) {
           return node;
         }
@@ -2243,11 +2330,13 @@
         '<th scope="col">Hardware ID</th>',
         '<th scope="col">Serial</th>',
         '<th scope="col">Remarks</th>',
+        '<th scope="col" aria-label="Row actions" style="width:40px;padding:6px;position:sticky;right:0;background:#f8fafc"></th>',
         '</tr></thead>',
         '<tbody></tbody>',
         '</table>',
         '</div>'
       ].join("");
+      table.querySelector("table").style.minWidth = "620px";
     }
 
     if (table.previousElementSibling !== card) {
@@ -2263,6 +2352,37 @@
     row.appendChild(cell);
   }
 
+  function appendRemarksCell(row, detail) {
+    var cell = document.createElement("td");
+    var input = document.createElement("textarea");
+    input.rows = 1; input.value = detail.remarks || "";
+    input.placeholder = "Type here";
+    input.setAttribute("aria-label", "Remarks for " + (detail.hardwareId || detail.serial || detail.components || "equipment"));
+    input.style.cssText = "box-sizing:border-box;width:100%;min-width:80px;min-height:36px;border:1px solid #cbd5e1;border-radius:6px;padding:6px 8px;font:inherit;resize:vertical;background:#fff;";
+    input.addEventListener("input", function () {
+      rows.forEach(function (saved, key) { if (detail.rowKeys.includes(key)) saved.remarks = input.value; });
+      window.dispatchEvent(new CustomEvent("ipas-smart-capture-detail-edit", { detail: { captureIds: detail.captureIds, remarks: input.value } }));
+    });
+    input.addEventListener("blur", scheduleRender);
+    cell.appendChild(input); row.appendChild(cell);
+  }
+
+  function appendDeleteCell(row, detail) {
+    var cell = document.createElement("td");
+    cell.style.cssText = "width:40px;padding:6px;position:sticky;right:0;background:#fff;vertical-align:middle;text-align:center;";
+    var button = document.createElement("button"); button.type = "button";
+    button.setAttribute("aria-label", "Delete equipment row " + (detail.hardwareId || detail.serial || detail.components || "equipment"));
+    button.title = "Remove this row; keep the photo and saved records";
+    button.style.cssText = "border:0;background:transparent;color:#b91c1c;padding:6px;cursor:pointer;border-radius:6px;";
+    button.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6"/></svg>';
+    button.addEventListener("click", function () {
+      window.dispatchEvent(new CustomEvent("ipas-smart-capture-detail-remove", { detail: { captureIds: detail.captureIds } }));
+      detail.rowKeys.forEach(key => rows.delete(key));
+      scheduleRender();
+    });
+    cell.appendChild(button); row.appendChild(cell);
+  }
+
   function renderTableNow() {
     renderScheduled = false;
     if (observer) observer.disconnect();
@@ -2275,6 +2395,7 @@
 
       var body = table.querySelector("tbody");
       if (!body) return;
+      if (table.contains(document.activeElement) && document.activeElement.matches("textarea,input,select")) return;
 
       body.textContent = "";
 
@@ -2282,7 +2403,7 @@
       if (data.length === 0) {
         var emptyRow = document.createElement("tr");
         var emptyCell = document.createElement("td");
-        emptyCell.colSpan = 5;
+        emptyCell.colSpan = 6;
         emptyCell.className = "ipas-smart-capture-equipment-empty";
         emptyCell.textContent = "No saved equipment details yet.";
         emptyRow.appendChild(emptyCell);
@@ -2293,10 +2414,22 @@
       data.forEach(function (detail) {
         var row = document.createElement("tr");
         appendCell(row, detail.components);
+        var unitProgress = window.__ipasEquipmentUnits?.progress(detail);
+        if (unitProgress) {
+          var unitBadge = document.createElement("small");
+          unitBadge.textContent = unitProgress.label + " · " + unitProgress.captured + "/4 captures";
+          unitBadge.style.cssText = "display:block;color:#475569;font-size:11px;margin-top:4px"; row.firstElementChild.appendChild(unitBadge);
+        }
         appendCell(row, detail.description);
         appendCell(row, detail.hardwareId);
         appendCell(row, detail.serial);
-        appendCell(row, detail.remarks);
+        appendRemarksCell(row, detail);
+        appendDeleteCell(row, detail);
+        if (detail.conflicts?.length) {
+          row.title = detail.notes; row.style.background = "#fffbeb";
+          var note = document.createElement("small"); note.textContent = "Review: " + detail.conflicts.join(", ") + " — use Modify";
+          note.style.cssText = "display:block;color:#92400e;margin-top:4px"; row.firstElementChild.appendChild(note);
+        }
         body.appendChild(row);
       });
     } finally {
@@ -2311,21 +2444,42 @@
   }
 
   window.addEventListener("ipas-smart-capture-detail-save", function (event) {
-    var detail = event.detail || {};
+    var detail = Object.assign({}, event.detail || {}, window.__ipasAutofillDetailMetadata?.(event.detail || {}) || {});
     var key = detailKey(detail);
     if (!key) return;
+    var existing = rows.get(key);
 
     rows.set(key, {
       captureId: normalizeName(detail.captureId),
       sourceName: normalizeName(detail.sourceName),
-      components: detail.components || "",
+      components: window.__ipasCanonicalEquipmentComponent ? window.__ipasCanonicalEquipmentComponent(detail.components || "") : detail.components || "",
       description: detail.description || "",
       hardwareId: detail.hardwareId || "",
       serial: detail.serial || "",
       remarks: detail.remarks || "",
-      savedOrder: saveSequence += 1
+      equipmentType: detail.equipmentType,
+      equipmentUnitId: detail.equipmentUnitId,
+      serialSource: detail.serialSource,
+      notes: detail.notes || "",
+      manualFields: detail.manualFields || [],
+      manualOrder: detail.manualOrder || 0,
+      savedOrder: existing ? existing.savedOrder : saveSequence += 1
     });
 
+    scheduleRender();
+  });
+
+  window.addEventListener("ipas-cam-capture-deleted", function (event) {
+    var detail = event.detail || {};
+    if (detail.captureType === "ticket") return;
+    try {
+      var user = JSON.parse(localStorage.getItem("icc_user") || "null");
+      if (user && detail.empId && String(user.employeeId) !== String(detail.empId)) return;
+    } catch (_) {}
+    rows.forEach(function (row, key) {
+      if ((detail.eventId && row.captureId === normalizeName(detail.eventId)) ||
+          (detail.reason !== "uploaded" && row.sourceName === normalizeName(detail.fileName))) rows.delete(key);
+    });
     scheduleRender();
   });
 
@@ -2335,9 +2489,10 @@
     if (!button) return;
 
     var sourceName = normalizeName(button.getAttribute("aria-label").replace(/^Remove\s+/, ""));
+    var captureId = button.dataset.autofillCaptureId;
     window.setTimeout(function () {
       rows.forEach(function (row, key) {
-        if (row.sourceName === sourceName) {
+        if (captureId ? row.captureId === captureId : row.sourceName === sourceName) {
           rows.delete(key);
         }
       });
@@ -2360,4 +2515,5 @@
   }
 
   observeRoot();
+  window.addEventListener("ipas-equipment-progress", scheduleRender);
 }());

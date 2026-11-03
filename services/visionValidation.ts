@@ -3,9 +3,10 @@ import type { BarcodeCandidate } from "../types/barcode.js";
 import { normalizeIdentifier } from "./comparison.js";
 import { sanitizeIntakeTextValue, sanitizeIntakeIdentifierValue } from "./intakeNormalization.js";
 import { KNOWN_BRANDS } from "./intakeConsolidation.js";
+import { applyEquipmentLabelRules, canonicalEquipmentComponent, labeledSerialValues } from "./equipmentLabels.js";
 
 type VisionField = "components" | "description" | "hardwareId" | "serial";
-type Proposal = Pick<IntakeRecord, VisionField> & { notes: string };
+type Proposal = Pick<IntakeRecord, VisionField> & { notes: string; serialSource: "manufacturer" | "snid" | "unknown" };
 type Issue = { field: VisionField; code: string; message: string };
 export type VisionValidation = {
   proposal: Proposal;
@@ -24,7 +25,7 @@ const components = new Set([
   "LAPTOP ADAPTER", "LAPTOP", "SCANNER", "WEBCAM", "ROUTER", "SWITCH",
 ]);
 const productBarcode = /^(?:EAN(?:_?\d+)?|UPC(?:_?[AE])?|GTIN(?:_?\d+)?|ISBN(?:_?\d+)?|ISSN)$/i;
-const snidValues = (text: string) => Array.from(text.matchAll(/\bSNID\s*[:#.,-]?\s*([A-Z0-9/-]{5,})/gi), match => normalizeIdentifier(match[1]));
+const snidValues = (text: string) => Array.from(text.matchAll(/\bSNID\b[\s:#.,=-]*([A-Z0-9/-]{5,})/gi), match => normalizeIdentifier(match[1]));
 
 /** Product barcodes identify a product line, not an individual manufacturer serial. */
 export function removeProductBarcodeSerial(record: IntakeRecord, barcodes: readonly BarcodeCandidate[]): IntakeRecord {
@@ -36,14 +37,12 @@ export function removeProductBarcodeSerial(record: IntakeRecord, barcodes: reado
 
 /** Repair only explicit field-role errors; never guess a corrected identifier. */
 export function prepareLocalVisionRecord(record: IntakeRecord, barcodes: readonly BarcodeCandidate[], ocrText: string): IntakeRecord {
-  const cleaned = removeProductBarcodeSerial(record, barcodes);
+  const cleaned = removeProductBarcodeSerial(applyEquipmentLabelRules(record, ocrText, KNOWN_BRANDS), barcodes);
   const addNote = (note: string) => { cleaned.notes = [cleaned.notes, note].filter(Boolean).join(" "); };
-  if (cleaned.serial) {
-    const snids = snidValues(ocrText);
-    if (snids.includes(normalizeIdentifier(cleaned.serial))) {
-      cleaned.serial = "";
-      addNote("An SNID was excluded from the manufacturer serial field. Confirm the S/N on the factory label.");
-    }
+  if (cleaned.serial && snidValues(ocrText).includes(normalizeIdentifier(cleaned.serial)) && !/^\d{7,16}$/.test(cleaned.serial) &&
+      !labeledSerialValues(ocrText).manufacturer.some(value => normalizeIdentifier(value) === normalizeIdentifier(cleaned.serial))) {
+    cleaned.serial = "";
+    addNote("The SNID contains unclear characters. Review the label or enter it manually; no characters were guessed.");
   }
   // A manufacturer serial accidentally selected as the model must not inflate the description.
   if (cleaned.description) {
@@ -66,7 +65,7 @@ export function prepareLocalVisionRecord(record: IntakeRecord, barcodes: readonl
 export function needsIntakeVision(record: IntakeRecord): boolean {
   return [record.components, record.description, record.hardwareId, record.serial].some(value => !value.trim())
     || KNOWN_BRANDS.includes(record.description.trim().toUpperCase())
-    || /low.clarity|low.quality|blurry|unclear|conflict|uncertain/i.test(record.notes || "");
+    || /low.clarity|low.quality|blurry|unclear|conflict|uncertain|SNID fallback/i.test(record.notes || "");
 }
 
 /** Validate an untrusted Vision proposal; corroboration is not a verification guarantee. */
@@ -90,7 +89,7 @@ export function validateVisionDraft(raw: unknown, evidence: Evidence = {}): Visi
     return sanitizeIntakeTextValue(value);
   }
   const notes = typeof input.notes === "string" ? input.notes.slice(0, 2000).trim() : "";
-  const proposal: Proposal = { components: text("components").toUpperCase(), description: text("description"), hardwareId: text("hardwareId"), serial: text("serial"), notes };
+  const proposal: Proposal = { components: canonicalEquipmentComponent(text("components").toUpperCase()), description: text("description"), hardwareId: text("hardwareId"), serial: text("serial"), notes, serialSource: "unknown" };
   if (proposal.components && !components.has(proposal.components)) {
     add("components", "unsupported_component", "The equipment category needs confirmation.");
     proposal.components = "";
@@ -112,9 +111,24 @@ export function validateVisionDraft(raw: unknown, evidence: Evidence = {}): Visi
   }
   if (proposal.serial) {
     const serialLabel = typeof input.serialLabel === "string" ? input.serialLabel : "";
-    if (/\b(?:MODEL|VERSION|SNID|EAN|UPC|GTIN)\b/i.test(serialLabel)) {
+    if (/\b(?:MODEL|VERSION|EAN|UPC|GTIN)\b/i.test(serialLabel)) {
       add("serial", "wrong_label", "The proposed serial came from a model, version or product-number label.");
       proposal.serial = "";
+    }
+    if (/\bSNID\b/i.test(serialLabel) || snidValues(evidence.ocrText || "").includes(normalizeIdentifier(proposal.serial))) {
+      const manufacturer = labeledSerialValues(evidence.ocrText || "").manufacturer;
+      if (!/^\d{7,16}$/.test(proposal.serial)) {
+        add("serial", "invalid_snid", "The proposed SNID is not a readable numeric SNID; retain it for manual review."); proposal.serial = "";
+      } else if (manufacturer.length || (evidence.observedRecord?.serial && !/SNID fallback/i.test(evidence.observedRecord.notes || "")
+        && normalizeIdentifier(evidence.observedRecord.serial) !== normalizeIdentifier(proposal.serial))) {
+        add("serial", "snid_over_manufacturer", "A readable S/N takes priority over SNID."); proposal.serial = "";
+      } else {
+        proposal.serialSource = "snid";
+        proposal.notes = ["SNID fallback: no readable manufacturer S/N was found.", proposal.notes].filter(Boolean).join(" ");
+      }
+    } else if (/^(?:S\s*\/\s*N|SN|SERIAL(?: NUMBER| NO\.?)?)$/i.test(serialLabel.trim()) ||
+      labeledSerialValues(evidence.ocrText || "").manufacturer.some(value => normalizeIdentifier(value) === normalizeIdentifier(proposal.serial))) {
+      proposal.serialSource = "manufacturer";
     }
   }
   if (proposal.serial) {
@@ -128,7 +142,7 @@ export function validateVisionDraft(raw: unknown, evidence: Evidence = {}): Visi
   }
   const unreadableSerial = /\b(?:manufacturer\s+)?serial(?:\s+number)?\s+(?:is\s+|was\s+)?(?:not\s+(?:clearly\s+)?(?:visible|readable|legible)|unreadable|unknown|missing|unclear|cannot\s+be\s+(?:read|seen))\b/i.test(notes)
     || /\bno\s+(?:manufacturer\s+)?serial(?:\s+number)?\s+(?:is\s+)?(?:visible|readable|legible)\b/i.test(notes);
-  if (proposal.serial && unreadableSerial) {
+  if (proposal.serial && unreadableSerial && proposal.serialSource !== "snid") {
     add("serial", "contradictory_visibility", "Vision returned a serial while reporting that it could not read the serial.");
     proposal.serial = "";
   }
@@ -136,9 +150,6 @@ export function validateVisionDraft(raw: unknown, evidence: Evidence = {}): Visi
     const brand = KNOWN_BRANDS.find(value => proposal.description.toUpperCase().startsWith(value + " "));
     if (brand && normalizeIdentifier(proposal.description.slice(brand.length)) === normalizeIdentifier(proposal.serial)) {
       add("serial", "model_as_serial", "The described model was returned as the manufacturer serial.");
-      proposal.serial = "";
-    } else if (snidValues(evidence.ocrText || "").includes(normalizeIdentifier(proposal.serial))) {
-      add("serial", "snid_as_serial", "The proposed serial matches an explicitly labeled SNID in the OCR evidence.");
       proposal.serial = "";
     }
   }
@@ -175,8 +186,13 @@ export function mergeVisionDraft(observed: IntakeRecord, validation: VisionValid
   const record: IntakeRecord = { ...observed };
   for (const field of ["components", "description", "hardwareId", "serial"] as const) {
     const proposal = validation.proposal[field];
-    if (field === "description" && proposal && KNOWN_BRANDS.includes(record.description.trim().toUpperCase())
-      && proposal.toUpperCase().startsWith(record.description.trim().toUpperCase() + " ")) {
+    if (field === "serial" && proposal && validation.proposal.serialSource === "manufacturer" && /SNID fallback/i.test(record.notes || "")) {
+      record.serial = proposal;
+      record.notes = (record.notes || "").replace(/SNID fallback:[^.]*\./gi, "").trim();
+      issues.push({ field, code: "manufacturer_preferred", message: "The readable manufacturer S/N replaced the SNID fallback; compare it with the label." });
+    } else if (field === "description" && proposal && record.description &&
+      normalizeIdentifier(proposal).includes(normalizeIdentifier(record.description)) &&
+      normalizeIdentifier(proposal).length > normalizeIdentifier(record.description).length) {
       record.description = proposal;
       issues.push({ field, code: "model_added", message: "Vision added model details to the observed brand; confirm the model on the manufacturer label." });
     } else if (!record[field] && proposal) record[field] = proposal;

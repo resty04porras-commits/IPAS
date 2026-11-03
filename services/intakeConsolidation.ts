@@ -48,6 +48,9 @@ export const KNOWN_BRANDS = [
   "COOLER MASTER",
   "CORSAIR",
   "CRUCIAL",
+  "DELTA",
+  "CHICONY",
+  "LITEON",
 ];
 
 export function countPopulatedIntakeFields(record: Pick<IntakeRecord, "components" | "description" | "hardwareId" | "serial">): number {

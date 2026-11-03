@@ -30,10 +30,11 @@ test("Vision can extend an observed brand with model details as a reviewable dra
   assert.equal(conflict.record.description, "ACER OTHER123"); assert.equal(conflict.requiresReview, true);
 });
 
-test("an explicitly labeled SNID cannot become the observed manufacturer serial", () => {
+test("a labeled SNID stays available while requesting a bounded check for manufacturer S/N", () => {
   const input = Object.freeze({ ...observed, serial: "03603241142" });
   const result = prepareLocalVisionRecord(input, [], "SNID,03603241142");
-  assert.equal(result.serial, ""); assert.equal(input.serial, "03603241142"); assert.equal(needsIntakeVision(result), true);
+  assert.equal(result.serial, "03603241142"); assert.equal(input.serial, "03603241142"); assert.equal(needsIntakeVision(result), true);
+  assert.match(result.notes || "", /SNID fallback/);
   assert.equal(prepareLocalVisionRecord(observed, [], "SNID 83603241142").serial, serial);
 });
 
@@ -49,9 +50,9 @@ test("conflicting decoded identifiers request review without rewriting OCR seria
   assert.equal(needsIntakeVision(prepareLocalVisionRecord(observed, [{ type: "EAN_13", value: "4713883585477" }], "")), false);
 });
 
-test("Vision cannot refill an explicitly labeled SNID as the manufacturer serial", () => {
+test("Vision can propose a labeled SNID fallback without claiming it is the manufacturer S/N", () => {
   const result = validateVisionDraft({ ...good, serial: "03603241142" }, { ocrText: "SNID,03603241142" });
-  assert.equal(result.proposal.serial, ""); assert.ok(result.issues.some(issue => issue.code === "snid_as_serial"));
+  assert.equal(result.proposal.serial, "03603241142"); assert.equal(result.proposal.serialSource, "snid"); assert.match(result.proposal.notes, /SNID fallback/);
 });
 
 test("a described model cannot become the serial without an explicit modelNumber field", () => {

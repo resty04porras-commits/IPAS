@@ -27,6 +27,7 @@
       }, options || {}, { signal: controller.signal }));
       var body = await response.json().catch(() => null);
       if (!response.ok) {
+        if (response.status === 409 && body?.code === "EQUIPMENT_CAPTURE_LIMIT") throw new Error(body.error);
         if (response.status === 401 || response.status === 403) throw new Error("Sign in with the account that captured these photos, then retry.");
         if (response.status === 413) throw new Error("The photo is too large. Choose a smaller image.");
         throw new Error("The server could not save the photo. Check the connection and retry.");
@@ -49,6 +50,14 @@
   // File in React; only the transmitted copy is resized. Preserve PNG alpha.
   async function preparePhoto(file) {
     var original = { imageData: await readPhoto(file), mimeType: file.type || "image/jpeg" };
+    // Preserve provenance when the phone sends a resized copy but File Manager
+    // later uploads its original File. Never use a filename as proof of identity.
+    try {
+      if (window.crypto && window.crypto.subtle) {
+        var digest = await window.crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+        original.sourceSha256 = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, "0")).join("");
+      }
+    } catch (_) { /* Sending still works; unverified copies stay in captures. */ }
     if (/image\/(?:gif|svg\+xml)/i.test(file.type)) return original;
     return new Promise((resolve) => {
       var image = new Image();
@@ -63,7 +72,7 @@
           var mimeType = file.type === "image/png" ? "image/png" : "image/jpeg";
           var imageData = canvas.toDataURL(mimeType, 0.82);
           // Small images may already be more efficient in their original format.
-          resolve(imageData.length < original.imageData.length ? { imageData: imageData, mimeType: mimeType } : original);
+          resolve(imageData.length < original.imageData.length ? { imageData: imageData, mimeType: mimeType, sourceSha256: original.sourceSha256 } : original);
         } catch (_) { resolve(original); }
       };
       image.src = original.imageData;
@@ -86,11 +95,21 @@
           body: JSON.stringify({
             empId: job.empId, imageData: job.prepared.imageData, fileName: job.file.name,
             mimeType: job.prepared.mimeType, captureType: "equipment",
+            sourceSha256: job.prepared.sourceSha256,
+            ...job.equipment,
           }),
         });
         if (!result || result.success !== true || !result.eventId) {
           throw new Error("The server did not confirm saving the photo. Retry Send.");
         }
+        window.__ipasEquipmentUnits?.saved(job.file, result);
+        window.dispatchEvent(new CustomEvent("ipas-smart-capture-saved", { detail: {
+          eventId: result.eventId, fileName: job.file.name, empId: job.empId,
+          imageData: job.prepared.imageData, sourceSha256: job.prepared.sourceSha256,
+          captureType: "equipment",
+          ...result,
+          ...(window.__ipasEquipmentUnits?.selection(result) || job.equipment),
+        } }));
         sendQueue.shift();
       }
       sendMessage("Saved on the server. Open Smart Capture on your laptop using the same account.", false);
@@ -121,6 +140,7 @@
         if (!user || !user.employeeId) throw new Error("Sign in, then attach the photo again to send it.");
         fresh.forEach((file, index) => sendQueue.push({
           file: file, empId: String(user.employeeId), prepared: index === 0 ? results[1] : null,
+          equipment: window.__ipasEquipmentUnits?.forFile(file),
         }));
         await flushPhotos();
       } catch (error) {
@@ -167,6 +187,7 @@
         <section aria-label="Smart Capture camera">
           <h3>Capture Asset Photos</h3>
           <p>Capture a clear photo of the asset tag and serial label, or upload an existing photo.</p>
+          <div data-unit-progress hidden style="margin-top:12px;padding:12px;border:1px solid #bfdbfe;border-radius:12px;background:#eff6ff"><strong data-unit-label></strong><p data-unit-count></p><button type="button" data-action="next-unit">Next unit / component</button></div>
           <div class="buttons">
             <button type="button" data-action="open">Open Camera</button>
             <button type="button" data-action="capture" disabled>Capture Photo</button>
@@ -189,6 +210,10 @@
       this.button("phone").addEventListener("click", () => this.chooseFile(true));
       this.button("stop").addEventListener("click", () => this.stop("Camera stopped."));
       this.button("retry").addEventListener("click", () => flushPhotos());
+      this.button("next-unit").addEventListener("click", () => window.__ipasEquipmentUnits?.choose(chosen => {
+        this.equipment = chosen; this.refreshButtons();
+        if (!this.stream) this.chooseFile(isPhone, chosen);
+      }));
       this.video.addEventListener("loadeddata", () => this.refreshButtons());
       this.onVisibility = () => {
         if (document.hidden && (this.stream || this.opening)) this.stop("Camera paused. Choose Open Camera to resume.");
@@ -202,15 +227,28 @@
         this.button("retry").disabled = sending;
       };
       this.onFileChange = (event) => {
-        if (!isPhone || !this.active() || !this.inputs) return;
+        if (!this.active() || !this.inputs) return;
         if (event.target !== this.inputs.camera && event.target !== this.inputs.upload) return;
         // Capture phase: React clears input.value in its own change handler.
         var files = Array.from(event.target.files || []).filter((file) =>
           file.type.startsWith("image/") || /\.(?:jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(file.name));
         if (!files.length) return;
+        var mode = this.pendingCaptureMode || "upload", chosen = this.pendingEquipment;
+        if (chosen && window.__ipasEquipmentUnits && !window.__ipasEquipmentUnits.reserveFiles(files, chosen)) {
+          event.preventDefault(); event.stopImmediatePropagation(); event.target.value = "";
+          this.message("Up to 4 photos per unit. Choose Next unit, or remove an unneeded photo before adding another.", true);
+          this.showStep(chosen, mode); return;
+        }
+        this.pendingEquipment = null;
+        this.pendingCaptureMode = null;
+        var local = files.map(file => window.__ipasEquipmentUnits?.forFile(file)).find(detail => detail?.equipmentLocalCaptureId);
+        if (local) { this.equipment = local; this.refreshButtons(); setTimeout(() => { if (this.active()) this.showStep(local, mode); }, 0); }
+        if (!isPhone) return;
         this.message("Photo added to Captured Images on this phone.", false);
         sendPhotos(files);
       };
+      this.onFileCancel = event => { if (event.target === this.inputs?.camera || event.target === this.inputs?.upload) this.pendingEquipment = null; };
+      this.onProgress = () => this.refreshButtons();
     }
 
     connectedCallback() {
@@ -220,7 +258,9 @@
       this.column.style.minWidth = "0";
       document.addEventListener("visibilitychange", this.onVisibility);
       document.addEventListener("change", this.onFileChange, true);
+      document.addEventListener("cancel", this.onFileCancel, true);
       window.addEventListener("ipas-smart-capture-send-status", this.onSendStatus);
+      window.addEventListener("ipas-equipment-progress", this.onProgress);
       this.button("phone").hidden = !(
         (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
         || /android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent)
@@ -240,7 +280,9 @@
     disconnectedCallback() {
       document.removeEventListener("visibilitychange", this.onVisibility);
       document.removeEventListener("change", this.onFileChange, true);
+      document.removeEventListener("cancel", this.onFileCancel, true);
       window.removeEventListener("ipas-smart-capture-send-status", this.onSendStatus);
+      window.removeEventListener("ipas-equipment-progress", this.onProgress);
       this.stop();
       if (this.column && this.column.style.minWidth === "0px") {
         this.column.style.minWidth = this.previousMinWidth;
@@ -258,7 +300,13 @@
 
     refreshButtons() {
       this.button("open").disabled = this.opening || Boolean(this.stream);
-      this.button("capture").disabled = this.capturing || !this.stream || this.video.readyState < 2 || !this.video.videoWidth;
+      var progress = window.__ipasEquipmentUnits?.progress(this.equipment || window.__ipasEquipmentUnits.currentSelection());
+      this.button("capture").disabled = this.capturing || !this.stream || this.video.readyState < 2 || !this.video.videoWidth || progress && !progress.remaining;
+      var box = this.shadowRoot.querySelector("[data-unit-progress]"); box.hidden = !progress;
+      if (progress) {
+        box.querySelector("[data-unit-label]").textContent = progress.label;
+        box.querySelector("[data-unit-count]").textContent = progress.captured + "/4 captures · " + (progress.remaining ? "Next: Capture " + progress.nextCapture + "/4" : "Maximum reached — review or choose the next unit");
+      }
       this.button("stop").hidden = !this.opening && !this.stream;
     }
 
@@ -275,8 +323,13 @@
       if (text) this.message(text, false);
     }
 
-    async open() {
-      if (!this.active() || this.opening || this.stream) return;
+    async open(equipment) {
+      if (!this.active() || this.opening) return;
+      if (!equipment && window.__ipasEquipmentUnits) {
+        window.__ipasEquipmentUnits.choose(chosen => this.open(chosen)); return;
+      }
+      this.equipment = equipment;
+      if (this.stream) { this.refreshButtons(); return; }
       if (!window.isSecureContext) {
         this.message("Live camera preview needs HTTPS or localhost. Upload Photos remains available; on a phone, you can also use Use Phone Camera.", true);
         return;
@@ -330,8 +383,13 @@
       }
     }
 
-    chooseFile(phone) {
+    chooseFile(phone, equipment) {
       if (!this.active()) return;
+      if (!equipment && window.__ipasEquipmentUnits) {
+        window.__ipasEquipmentUnits.choose(chosen => this.chooseFile(phone, chosen)); return;
+      }
+      this.pendingEquipment = equipment;
+      this.equipment = equipment; this.pendingCaptureMode = phone ? "phone" : "upload";
       this.stop();
       var input = phone ? this.inputs.camera : this.inputs.upload;
       input.value = "";
@@ -352,6 +410,10 @@
         if (!blob) throw new Error("No image was captured.");
         if (serial !== this.serial || !this.active()) return;
         var file = new File([blob], "capture-" + Date.now() + ".jpg", { type: "image/jpeg" });
+        if (window.__ipasEquipmentUnits && !window.__ipasEquipmentUnits.reserveFiles([file], this.equipment)) {
+          this.message("This unit already has four photos. Choose Next unit / component.", true); return;
+        }
+        this.pendingCaptureMode = "live";
         var transfer = new DataTransfer();
         transfer.items.add(file);
         this.inputs.upload.files = transfer.files;
@@ -364,9 +426,29 @@
         this.refreshButtons();
       }
     }
+
+    showStep(equipment, mode) {
+      window.__ipasEquipmentUnits?.afterCapture(equipment, {
+        continue: chosen => { this.equipment = chosen; this.refreshButtons(); if (mode !== "live") this.chooseFile(mode === "phone", chosen); },
+        next: () => window.__ipasEquipmentUnits.choose(chosen => {
+          this.equipment = chosen; this.refreshButtons(); if (mode !== "live") this.chooseFile(mode === "phone", chosen);
+        }),
+      });
+    }
   }
 
   customElements.define(tagName, SmartCaptureCamera);
+
+  // Existing native buttons outside this custom control still enter the same
+  // equipment-only picker. Ticket/receipt controls are outside this heading.
+  document.addEventListener("click", function (event) {
+    if (!isSmartCapture() || !window.__ipasEquipmentUnits) return;
+    var target = event.target?.closest?.("#root button");
+    if (!target || !["Add More from Camera", "Attach More Images"].includes(target.textContent.trim())) return;
+    var camera = document.querySelector(tagName); if (!camera) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    camera.chooseFile(target.textContent.trim() === "Add More from Camera");
+  }, true);
 
   function sync() {
     var existing = document.querySelector(tagName);

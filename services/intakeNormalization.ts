@@ -1,6 +1,7 @@
 import type { IntakeRecord } from "../types/accountability.js";
 import { sanitizeOcrValue } from "./ocr/snapshots.js";
 import { dedupePreserveOrder } from "./comparison.js";
+import { canonicalEquipmentComponent } from "./equipmentLabels.js";
 
 const PLACEHOLDER_INTAKE_VALUE_PATTERN = /^(?:BLANK(?:\s+\d+)?|DUPLICATE|DUPLICATED?|COPY|SAME|N\/A|NA|NONE|NULL|UNDEFINED)$/i;
 const ASSET_TAG_PATTERN = /\b([A-Z]{1,8})[\s/-]*((?:19|20)\d{2})[\s/-]*([A-Z0-9]{2,8})\b/i;
@@ -133,7 +134,7 @@ export function normalizeIntakeRecord(record: Partial<IntakeRecord> | undefined)
     "";
   return {
     sourceName: typeof record?.sourceName === "string" ? record.sourceName : "",
-    components: sanitizeIntakeTextValue(typeof record?.components === "string" ? record.components : ""),
+    components: canonicalEquipmentComponent(sanitizeIntakeTextValue(typeof record?.components === "string" ? record.components : "")),
     description: sanitizeIntakeTextValue(typeof record?.description === "string" ? record.description : ""),
     hardwareId,
     serial: sanitizeIntakeIdentifierValue(serialValue, "serial", hardwareId),

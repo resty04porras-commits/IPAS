@@ -87,6 +87,9 @@ import { registerDocumentRepositoryRoutes } from "./routes/documentRepository.js
 import { getRepoMimeType } from "./services/documentRepositoryMime.js";
 import { createCameraSyncController } from "./controllers/cameraSyncController.js";
 import { createCameraSyncRoutes } from "./routes/cameraSyncRoutes.js";
+import { createCaptureAutofill, sanitizeCaptureExportItems } from "./services/captureAutofill.js";
+import { createCaptureAutofillController } from "./controllers/captureAutofillController.js";
+import { applyEquipmentLabelRules, chooseLabeledSerial, selectMissingFieldProbes, labeledSerialValues } from "./services/equipmentLabels.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env"), quiet: true } as any);
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local"), override: true, quiet: true } as any);
@@ -143,7 +146,7 @@ const { callStructuredOutput: callGeminiForStructuredOutput } = createCloudVisio
   requestsPerMinute: readBoundedIntegerEnv("IPAS_AI_REQUESTS_PER_MINUTE", 5, 0, 15),
   requestsPer24Hours: readBoundedIntegerEnv("IPAS_AI_REQUESTS_PER_24H", 10, 0, 1000),
 });
-const OCR_EXTRACTION_VERSION = "ocr-v10-reviewed-vision";
+const OCR_EXTRACTION_VERSION = "ocr-v12-manufacturer-first";
 
 function readBoundedIntegerEnv(name: string, fallback: number, minimum: number, maximum = Number.MAX_SAFE_INTEGER): number {
   const parsed = Number.parseInt(process.env[name] || "", 10);
@@ -587,15 +590,19 @@ function findNearbyLines(lines: OcrLineEntry[], anchor: OcrBBox, extraBelow: num
   );
 }
 
-async function extractRegionalOcrSnapshots(file: CompareSourceFile) {
+async function extractRegionalOcrSnapshots(file: CompareSourceFile, onFullDraft?: (record: IntakeRecord) => void) {
   const full = await recognizeOcrSnapshot(file);
   const fullOnlyRecord = buildIntakeRecordFromOcr(file.name, { full, probes: [] });
+  onFullDraft?.({ ...fullOnlyRecord, remarks: "" });
   const fullTextLength = full.text.trim().length;
+  // A complete-looking SNID fallback must not skip the manufacturer-label scan.
+  // Small or separated S/N text may be absent from full-image OCR altogether.
+  const unreadManufacturer = /SNID fallback/i.test(fullOnlyRecord.notes || "") && !labeledSerialValues(full.text).manufacturer.length;
 
   if (
-    hasStrongIntakeExtraction(fullOnlyRecord) ||
+    !unreadManufacturer && (hasStrongIntakeExtraction(fullOnlyRecord) ||
     (hasUsableIntakeExtraction(fullOnlyRecord) && (full.confidence >= 0.72 || full.lines.length >= 4 || fullTextLength >= 90)) ||
-    fullTextLength > 200
+    fullTextLength > 200)
   ) {
     return { full, probes: [] };
   }
@@ -710,7 +717,8 @@ async function extractRegionalOcrSnapshots(file: CompareSourceFile) {
     }
   }
 
-  if (!paddleOcrProbeEnabled || probeDefinitions.length === 0) {
+  const neededProbes = selectMissingFieldProbes(probeDefinitions, unreadManufacturer ? { ...fullOnlyRecord, serial: "", description: "" } : fullOnlyRecord, KNOWN_BRANDS);
+  if (!paddleOcrProbeEnabled || neededProbes.length === 0) {
     return { full, probes: [] };
   }
 
@@ -718,13 +726,13 @@ async function extractRegionalOcrSnapshots(file: CompareSourceFile) {
   try {
     batchSnapshots = await recognizeOcrSnapshotBatch(
       file,
-      probeDefinitions.map((probe) => ({ key: probe.key, rectangle: probe.rectangle }))
+      neededProbes.map((probe) => ({ key: probe.key, rectangle: probe.rectangle }))
     );
   } catch (error) {
     console.warn(`PaddleOCR probe batch failed for ${file.name}. Falling back to full-image OCR only.`, error);
   }
 
-  const probes = probeDefinitions
+  const probes = neededProbes
     .map((probe) => ({
       ...probe,
       snapshot: batchSnapshots[probe.key],
@@ -777,6 +785,7 @@ function inferComponentFromHardwareId(hardwareId: string): string {
 
 function inferComponentFromText(text: string, hardwareId: string): string {
   const normalized = text.toUpperCase();
+  if (/\b(?:(?:CPU|LAPTOP|NOTEBOOK)\s+ADAPT(?:ER|OR)|(?:LAPTOP|CPU)\s+CHARGER)\b/i.test(normalized)) return "LAPTOP ADAPTER";
   const componentMatchers: Array<{ label: string; patterns: RegExp[] }> = [
     { label: "KEYBOARD", patterns: [/\bKEYBOARD\b/i] },
     { label: "MOUSE", patterns: [/\bMOUSE\b/i] },
@@ -792,7 +801,7 @@ function inferComponentFromText(text: string, hardwareId: string): string {
     { label: "SWITCH", patterns: [/\bSWITCH\b/i, /\bNETWORK SWITCH\b/i] },
     // Match both spellings: ADAPTER and ADAPTOR
     { label: "LAPTOP ADAPTER", patterns: [/\bLAPTOP\s+ADAPT(?:ER|OR)\b/i, /\bNOTEBOOK\s+ADAPT(?:ER|OR)\b/i] },
-    { label: "CPU ADAPTER", patterns: [/\bCPU\s+ADAPT(?:ER|OR)\b/i, /\bPOWER\s+ADAPT(?:ER|OR)\b/i, /\b(?<!LAPTOP\s)(?<!NOTEBOOK\s)ADAPT(?:ER|OR)\b/i] },
+    { label: "CPU ADAPTER", patterns: [/\bCPU\s+ADAPT(?:ER|OR)\b/i, /\bPOWER\s+ADAPT(?:ER|OR)\b/i, /\b(?<!LAPTOP\s)(?<!NOTEBOOK\s)ADAPT(?:ER|OR)\b/i, /\bCHARGER\b/i] },
   ];
 
   for (const matcher of componentMatchers) {
@@ -861,6 +870,8 @@ function pickBestAssetTag(sources: WeightedOcrText[]): string {
 }
 
 function pickBestSerial(sources: WeightedOcrText[], hardwareId: string): string {
+  const labeled = chooseLabeledSerial(sources.map(source => source.text).join("\n"), "", hardwareId);
+  if (labeled.value || labeled.conflict) return labeled.value;
   const candidates = new Map<string, number>();
   const labeledPatterns = [
     { pattern: /\bSERIAL(?:\s*NO\.?|\s*NUMBER?\.?)?[:#\s-]*([A-Z0-9/-]{5,})\b/i, bonus: 42 },
@@ -1153,7 +1164,7 @@ function buildIntakeRecordFromOcr(
     ], component)
   );
 
-  return {
+  return applyEquipmentLabelRules({
     sourceName: fileName,
     components: component,
     description,
@@ -1161,7 +1172,7 @@ function buildIntakeRecordFromOcr(
     serial,
     remarks: "New Accountability",
     notes: buildOcrNotes({ hardwareId, serial, description, component, lowQuality: lowQualityImage }),
-  };
+  }, [ocr.full.text, ...ocr.probes.map(probe => probe.snapshot.text)].join("\n"), KNOWN_BRANDS);
 }
 
 function normalizeComparisonText(text: string): string {
@@ -1316,8 +1327,7 @@ function extractReferenceRecords(referenceSource?: CompareSourceFile | null): Re
 }
 
 function sanitizeAccountabilityPayload(payload: Partial<AccountabilityFormPayload> | undefined): AccountabilityFormPayload {
-  const normalizedItems = Array.isArray(payload?.items) ? payload.items.map(normalizeIntakeRecord) : [];
-  const dedupedItems = dedupeIntakeRecords(normalizedItems);
+  const dedupedItems = sanitizeCaptureExportItems(payload?.items);
 
   return {
     employeeName: typeof payload?.employeeName === "string" ? payload.employeeName : "",
@@ -2381,14 +2391,14 @@ You extract equipment accountability details from field-capture photos of physic
 Rules:
 1. Return exactly one object per image, in the same order as the uploaded images.
 2. sourceName must exactly match the uploaded filename for that image.
-3. components: identify the equipment type from the device shape, brand label, or visible text. Use UPPERCASE. Choose from: SYSTEM UNIT, MONITOR, PRINTER, KEYBOARD, MOUSE, UPS, CPU ADAPTER, LAPTOP ADAPTER, LAPTOP, SCANNER, WEBCAM, ROUTER, SWITCH.
-4. description: read the brand name and model number from the MANUFACTURER label on the device (e.g., DELL OPTIPLEX 3080, LENOVO THINKPAD E14, HP LASERJET PRO M404N, ASUS NUC PRO). Use the brand alone if model is unclear.
+3. components: identify the equipment type from the device shape, brand label, or visible text. Use UPPERCASE. Choose from: SYSTEM UNIT, MONITOR, PRINTER, KEYBOARD, MOUSE, UPS, LAPTOP ADAPTER, LAPTOP, SCANNER, WEBCAM, ROUTER, SWITCH. CPU adapter, laptop adapter/adaptor, charger and LAD are the same LAPTOP ADAPTER category. Do not change unrelated categories.
+4. description: read the visible BRAND, MODEL and VERSION from the manufacturer label. Include all readable parts, for example ACER K222HQL VERSION B or DELTA ADP-65GD D. Do not use the words MODEL NO or NO alone, serial numbers, SNID, company tags or electrical ratings as a description. Never invent an unseen brand, model or version.
 5. hardwareId: read the INTERNAL COMPANY PROPERTY TAG — a printed sticker with code format PREFIX-YEAR-CODE (e.g., CPU-2024-AB1, MTR-2025-XY1). Prefixes: CPU, MTR, MON, KBD, MSE, SCN, PTR, UPS, CAD, LAD, LTP, PRN. This tag is SEPARATE from the manufacturer label. NEVER use the manufacturer serial number as hardwareId.
-6. serial: read the MANUFACTURER SERIAL NUMBER from the factory label. It is labeled "Serial Number", "Serial No.", "S/N", or "SN". SNID, EAN, UPC, model and version numbers are separate fields and must not be used as the manufacturer serial.
+6. serial: prefer the MANUFACTURER SERIAL NUMBER labeled "Serial Number", "Serial No.", "S/N", or "SN". Only when no manufacturer S/N is readable, use the explicitly labeled SNID as the fallback. Set serialLabel to "S/N", "SNID", or empty to identify the source. EAN, UPC, model and version numbers must never be used as serial or SNID.
    - Preserve 0 vs O, 1 vs I vs L, 5 vs S, 8 vs B and 2 vs Z exactly as printed. If a character cannot be read, leave the identifier empty; never guess or complete it.
    - NEVER copy the hardwareId into serial. They are always different values.
-   - If "S/N" label is not visible, leave serial empty rather than guessing.
-7. remarks: use "New Accountability" unless the image shows a different status.
+   - When neither a readable S/N nor a readable SNID label is visible, leave serial empty rather than guessing. Mention SNID fallback in notes if it is used.
+7. remarks: leave empty; the operator enters Remarks manually.
 8. notes: briefly describe any values that were unclear, unreadable, or missing. If no issues, leave empty.
 9. Return JSON only. Never invent values — leave fields empty when genuinely unreadable.
 `.trim();
@@ -2406,10 +2416,11 @@ Rules:
           description: { type: Type.STRING },
           hardwareId: { type: Type.STRING },
           serial: { type: Type.STRING },
+          serialLabel: { type: Type.STRING },
           remarks: { type: Type.STRING },
           notes: { type: Type.STRING },
         },
-        required: ["sourceName", "components", "description", "hardwareId", "serial", "remarks"],
+        required: ["sourceName", "components", "description", "hardwareId", "serial", "serialLabel", "remarks"],
       },
     }
   );
@@ -2437,6 +2448,7 @@ Rules:
     return {
       ...extracted,
       sourceName: file.name,
+      serialLabel: typeof parsed[index]?.serialLabel === "string" ? parsed[index].serialLabel.slice(0, 40) : "",
       remarks: extracted.remarks || "New Accountability",
     };
   });
@@ -2679,7 +2691,8 @@ async function extractIntakeRecordsByBarcode(
 
 async function extractIntakeRecordsResilient(
   evidenceFiles: CompareSourceFile[],
-  referenceRecords: ReferenceRecord[] = []
+  referenceRecords: ReferenceRecord[] = [],
+  progress: { onLocalDraft?: (record: IntakeRecord) => void; force?: boolean } = {}
 ): Promise<IntakeExtractionResponse> {
   let cached = 0;
   let extracted = 0;
@@ -2695,7 +2708,8 @@ async function extractIntakeRecordsResilient(
   // Keep positional identity even when two different uploads have the same filename.
   evidenceFiles.forEach((file, index) => {
     const key = getIntakeCacheKey(file);
-    const existing = intakeExtractionCache.get(key);
+    const existing = progress.force ? undefined : intakeExtractionCache.get(key);
+    if (progress.force) intakeBarcodeCache.delete(key);
     if (existing) {
       cached += 1;
       rawRecords[index] = { ...existing, sourceName: file.name };
@@ -2707,7 +2721,7 @@ async function extractIntakeRecordsResilient(
   // Both local readers run before any cloud assistance. Barcode lookup later reuses this scan.
   await mapWithConcurrency(work, localOcrParallelism, async item => {
     const [ocr, barcode] = await Promise.allSettled([
-      extractRegionalOcrSnapshots(item.file),
+      extractRegionalOcrSnapshots(item.file, progress.onLocalDraft),
       item.file.kind === "image" && item.file.contentType === "inlineData"
         ? scanIntakeBarcode(item.file) : Promise.resolve(null),
     ]);
@@ -2720,6 +2734,7 @@ async function extractIntakeRecordsResilient(
     }
     item.ocrText = [snapshots.full.text, ...snapshots.probes.map(probe => probe.snapshot.text)].join("\n");
     item.local = prepareLocalVisionRecord(buildIntakeRecordFromOcr(item.file.name, snapshots), item.barcodes, item.ocrText);
+    progress.onLocalDraft?.({ ...item.local, remarks: "" });
     item.local.notes = item.local.notes?.replaceAll("PaddleOCR", "OCR");
     if (ocr.status === "rejected") {
       item.local.notes = combineExtractionNotes(item.local.notes, "Local OCR could not complete. Review the original image.");
@@ -2743,7 +2758,7 @@ async function extractIntakeRecordsResilient(
           record = {
             ...merged.record,
             sourceName: item.file.name,
-            notes: combineExtractionNotes(item.local.notes, validation.proposal.notes,
+            notes: combineExtractionNotes(merged.record.notes, validation.proposal.notes,
               "Gemini-assisted draft; compare the fields with the original image before saving or export.",
               merged.requiresReview ? `[Vision review required] ${merged.issues.map(issue => issue.message).join(" ")} Proposed values: ${proposalText}` : ""),
           };
@@ -3165,6 +3180,22 @@ async function startServer() {
   const managementRoutes = createManagementRoutes(managementController);
   const authController = createAuthController();
   const cameraSyncController = createCameraSyncController();
+  const captureAutofill = createCaptureAutofill({
+    extract: (file, onLocalDraft, force) => extractIntakeRecordsResilient([file], [], { onLocalDraft, force }),
+  });
+  const captureAutofillController = createCaptureAutofillController({
+    autofill: captureAutofill,
+    getCapture: cameraSyncController.getCaptureForAutofill,
+    prepareFile: prepareUploadedFileForComparison,
+  });
+  const captureAutofillUpload = multer({ dest: "uploads/", limits: { fileSize: 20 * 1024 * 1024, files: 1 } });
+  app.post("/api/intake/auto-extract", (req, res, next) => {
+    if (!(req as any).session?.user?.employeeId) return res.status(401).json({ error: "Sign in to read captured images." });
+    captureAutofillUpload.single("evidence")(req, res, error => {
+      if (error) return res.status(400).json({ error: "Attach one equipment image within the upload size limit." });
+      next();
+    });
+  }, captureAutofillController);
   const cameraSyncRoutes = createCameraSyncRoutes(cameraSyncController);
   const authRoutes = createAuthRoutes(authController);
 
@@ -3318,6 +3349,7 @@ async function startServer() {
   app.use("/api", managementRoutes);
 
   const documentRepositoryController = createDocumentRepositoryController({
+    prepareCaptureUpload: cameraSyncController.prepareStorageUpload,
     normalizeNextcloudPath,
     sanitizeNextcloudSegment,
     getWebDAVClient,
