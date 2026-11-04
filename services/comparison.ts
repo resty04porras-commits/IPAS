@@ -1,3 +1,5 @@
+import { canonicalEquipmentComponent } from "./equipmentLabels.js";
+
 export type CompareRecord = {
   sn: string;
   district: string;
@@ -86,7 +88,7 @@ function getComparisonFieldLabel(field: ComparisonField): string {
 }
 
 function normalizeComponentForComparison(value: string): string {
-  const condensed = normalizeGeneral(value)
+  const condensed = normalizeGeneral(canonicalEquipmentComponent(value))
     .replace(/\bADAPTOR\b/g, "ADAPTER")       // normalise British/local spelling
     .replace(/\bDESKTOP COMPUTER\b/g, "SYSTEM UNIT")
     .replace(/\bCPU\b/g, "SYSTEM UNIT")
@@ -123,14 +125,12 @@ function normalizeComponentForComparison(value: string): string {
     MOUSE: "MOUSE",
     // Power
     UPS: "UPS",
-    // Adapter variants — both CPU and Laptop normalize to CPUADAPTER for
-    // comparison purposes (they are separate fields on forms but compare alike)
-    CPUADAPTER: "CPUADAPTER",
-    CPUADAPTOR: "CPUADAPTER",
-    CPADAPTER: "CPUADAPTER",
-    POWERADAPTER: "CPUADAPTER",
-    ADAPTER: "CPUADAPTER",
-    LAPTOPADADAPTER: "LAPTOPADAPTER",
+    // Adapter variants follow the shared laptop-adapter policy.
+    CPUADAPTER: "LAPTOPADAPTER",
+    CPUADAPTOR: "LAPTOPADAPTER",
+    CPADAPTER: "LAPTOPADAPTER",
+    POWERADAPTER: "LAPTOPADAPTER",
+    ADAPTER: "LAPTOPADAPTER",
     LAPTOPADAPTER: "LAPTOPADAPTER",
     LAPTOPADAPTOR: "LAPTOPADAPTER",
     // Webcam
@@ -194,9 +194,9 @@ function descriptionsSubstantivelyMatch(expectedValue: string, observedValue: st
     return false;
   }
 
-  const smallerHasModelLikeToken = [...expectedSet, ...observedSet].some((token) => /\d/.test(token));
+  const overlapHasModelLikeToken = overlap.some((token) => /\d/.test(token));
 
-  return overlap.length === smallerCount && (smallerCount >= 2 || smallerHasModelLikeToken);
+  return overlap.length === smallerCount && (smallerCount >= 2 || overlapHasModelLikeToken);
 }
 
 function getMismatchReason(field: ComparisonField): string {
@@ -398,3 +398,4 @@ export function compareExtractedRecords(
     };
   });
 }
+

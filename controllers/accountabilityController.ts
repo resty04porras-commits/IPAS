@@ -1,6 +1,9 @@
 import type { OcrSourceFile as CompareSourceFile, OcrSnapshot, OcrRecognition, OcrRecognizeOptions } from "../types/ocr.js";
 import type { BarcodeScanResult as ScanResult, BarcodeCandidate } from "../types/barcode.js";
 import type { Request, Response } from "express";
+import { createComparisonResponse } from "../services/comparisonStream.js";
+import type { ComparisonContext } from "../services/comparisonWorkflow.js";
+import { generateComparisonReportExport } from "../services/comparisonReport.js";
 import type { Multer } from "multer";
 import { writeAuditLog } from "./auditHelper.js";
 import {
@@ -105,6 +108,7 @@ export interface AccountabilityControllerDependencies {
   runGeminiComparison: (
     source1: CompareSourceFile,
     source2: CompareSourceFile[],
+    context?: ComparisonContext,
   ) => Promise<unknown>;
   sanitizeAccountabilityPayload: (
     payload: Partial<AccountabilityFormPayload> | undefined,
@@ -779,123 +783,58 @@ export function createAccountabilityController(
     }
   };
 
+  function comparisonFailure(error: any, reply: ReturnType<typeof createComparisonResponse>) {
+    if (error?.code === "AI_DAILY_BUDGET") return reply.fail("The installation's Gemini allowance for the past 24 hours is exhausted. A readable local PDF or structured Excel reference can still be compared with local OCR.", 429);
+    if (error?.code === "AI_MINUTE_BUDGET") return reply.fail("The installation's Gemini allowance per minute is exhausted. Local reading remains available; retry cloud reading when the allowance becomes available.", 429);
+    if (error?.code === "AI_COOLDOWN") return reply.fail("Gemini is cooling down after an earlier provider error. Local reading remains available; cloud reading can be retried after the cooldown.", 429);
+    if (error?.code === "AI_DISABLED") return reply.fail("Reference document reading is unavailable in local-only mode. Use a structured Excel table or check the existing document-reading settings.", 503);
+    if (error?.code === "AI_TIMEOUT") return reply.fail("Reference document reading timed out. The selected files were kept; use a clearer reference copy or try again.", 504);
+    if (isInvalidStructuredResponse(error)) return reply.fail("Comparison service returned incomplete structured data. The selected files were kept; review the source or try again.", 502);
+    if (error?.message?.includes("GEMINI_API_KEY")) return reply.fail("GEMINI_API_KEY is not configured. Create .env.local and restart the server.", 503);
+    if (error?.status === 429 || /429|RESOURCE_EXHAUSTED|quota exceeded/i.test(error?.message || "")) return reply.fail("Cloud comparison quota or the local request budget is unavailable. The selected files were kept.", 429);
+    if (error?.status === 403 || /403|PERMISSION_DENIED/.test(error?.message || "")) return reply.fail("Gemini API permission denied. Check your GEMINI_API_KEY.", 403);
+    if ([400,413,499,504].includes(error?.status)) return reply.fail(String(error.message).slice(0,500), error.status);
+    if (isGeminiUnavailable(error)) return reply.fail("Comparison service is temporarily busy. Please try again in a moment.", 503);
+    return reply.fail((extractUpstreamErrorMessage(error) || "Comparison failed.").slice(0,500), 500);
+  }
   const compare = async (req: Request, res: Response) => {
-    const { source1, source2 } = req.body as {
-      source1?: CompareSourceFile;
-      source2?: CompareSourceFile[];
-    };
-
-    if (!source1 || !Array.isArray(source2) || source2.length === 0) {
-      return res.status(400).json({
-        error: "Comparison request is missing source files.",
-      });
-    }
-
+    const { source1, source2 } = req.body as { source1?: CompareSourceFile; source2?: CompareSourceFile[] };
+    if (!source1 || !Array.isArray(source2) || !source2.length) return res.status(400).json({ error: "Comparison request is missing source files." });
+    const reply = createComparisonResponse(req,res);
     try {
-      const results = await runGeminiComparison(source1, source2);
-      return res.json(results);
-    } catch (error: any) {
-      console.error("Comparison error:", error);
-
-      if (isInvalidStructuredResponse(error)) {
-        console.error(
-          "Malformed Gemini JSON snippet:",
-          error?.responseSnippet,
-        );
-        return res.status(502).json({
-          error:
-            "Comparison service returned incomplete structured data. Please try the comparison again.",
-        });
-      }
-
-      if (error?.message?.includes("GEMINI_API_KEY")) {
-        return res.status(503).json({
-          error:
-            "GEMINI_API_KEY is not configured. Create .env.local and restart the server.",
-        });
-      }
-
-      if (
-        error?.message?.includes("429") ||
-        error?.message?.includes("RESOURCE_EXHAUSTED") ||
-        error?.message?.includes("quota exceeded")
-      ) {
-        return res.status(429).json({
-          error:
-            "Gemini API quota exceeded. Please wait a few minutes and try again.",
-        });
-      }
-
-      if (isGeminiUnavailable(error)) {
-        return res.status(503).json({
-          error:
-            "Comparison service is temporarily busy. Please try again in a moment.",
-        });
-      }
-
-      if (
-        error?.message?.includes("403") ||
-        error?.message?.includes("PERMISSION_DENIED")
-      ) {
-        return res.status(403).json({
-          error:
-            "Gemini API permission denied. Check your GEMINI_API_KEY.",
-        });
-      }
-
-      return res.status(500).json({
-        error:
-          extractUpstreamErrorMessage(error) || "Comparison failed.",
-      });
-    }
+      reply.progress({ stage: "source", completed: 0, total: 1, message: "Preparing the comparison…" });
+      return reply.finish(await runGeminiComparison(source1, source2, reply.context));
+    } catch (error) { console.error("Comparison error:", error); return comparisonFailure(error,reply); }
+    finally { reply.dispose(); }
   };
-
 
   const compareUpload = async (req: Request, res: Response) => {
     const files = ((req as any).files || {}) as Record<string, Express.Multer.File[]>;
-    const source1File = files.source1?.[0];
-    const source2Files = files.source2 || [];
-    const uploadedFiles = [source1File, ...source2Files].filter(Boolean) as Express.Multer.File[];
-
-    if (!source1File || source2Files.length === 0) {
-      for (const file of uploadedFiles) {
-        await import("node:fs").then(({ promises }) =>
-          promises.unlink(file.path).catch(() => undefined),
-        );
-      }
-      return res.status(400).json({ error: "Comparison request is missing source files." });
-    }
-
+    const source1File = files.source1?.[0], source2Files = files.source2 || [];
+    const uploadedFiles = [source1File,...source2Files].filter(Boolean) as Express.Multer.File[];
+    const reply = createComparisonResponse(req,res);
     try {
+      if (!source1File || !source2Files.length) return reply.fail("Comparison request is missing source files.",400);
+      reply.progress({ stage: "source", completed: 0, total: 1, message: "Preparing the uploaded files…" });
       const preparedSource1 = await prepareUploadedFileForComparison(source1File);
       const preparedSource2 = await Promise.all(source2Files.map(prepareUploadedFileForComparison));
-      const results = await runGeminiComparison(preparedSource1, preparedSource2);
-      return res.json(results);
+      return reply.finish(await runGeminiComparison(preparedSource1,preparedSource2,reply.context));
+    } catch (error) { console.error("Comparison upload error:", error); return comparisonFailure(error,reply); }
+    finally {
+      reply.dispose();
+      for (const file of uploadedFiles) await import("node:fs").then(({ promises }) => promises.unlink(file.path).catch(() => undefined));
+    }
+  };
+
+  const exportComparison = async (req: Request, res: Response) => {
+    try {
+      const exported = await generateComparisonReportExport(req.body?.results,req.body?.format);
+      res.setHeader("Content-Type",exported.contentType);
+      res.setHeader("Content-Disposition",`attachment; filename="comparison-results.${exported.extension}"`);
+      res.setHeader("Cache-Control","no-store");
+      return res.send(exported.buffer);
     } catch (error: any) {
-      console.error("Comparison upload error:", error);
-
-      if (isInvalidStructuredResponse(error))
-        return res.status(502).json({ error: "Comparison service returned incomplete structured data. Please try the comparison again." });
-
-      if (error?.message?.includes("GEMINI_API_KEY"))
-        return res.status(503).json({ error: "GEMINI_API_KEY is not configured. Create .env.local and restart the server." });
-
-      if (error?.message?.includes("429") || error?.message?.includes("RESOURCE_EXHAUSTED") || error?.message?.includes("quota exceeded"))
-        return res.status(429).json({ error: "Gemini API quota exceeded. Please wait a few minutes and try again." });
-
-      if (isGeminiUnavailable(error))
-        return res.status(503).json({ error: "Comparison service is temporarily busy. Please try again in a moment." });
-
-      if (error?.message?.includes("403") || error?.message?.includes("PERMISSION_DENIED"))
-        return res.status(403).json({ error: "Gemini API permission denied. Check your GEMINI_API_KEY." });
-
-      return res.status(500).json({ error: extractUpstreamErrorMessage(error) || "Comparison failed." });
-    } finally {
-      for (const file of uploadedFiles) {
-        await import("node:fs").then(({ promises }) =>
-          promises.unlink(file.path).catch(() => undefined),
-        );
-      }
+      return res.status(error?.status === 400 ? 400 : 500).json({error:error?.status === 400 ? error.message : "The comparison report could not be exported. Please try again."});
     }
   };
 
@@ -978,6 +917,7 @@ export function createAccountabilityController(
     extractIntake,
     compare,
     compareUpload,
+    exportComparison,
     exportAccountability,
   };
 }

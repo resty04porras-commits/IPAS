@@ -74,6 +74,10 @@ test("different equipment categories retain a component mismatch and physical-ev
   const result = compareField("components", "MONITOR", "PRINTER");
   assert.equal(result.matches, false); assert.match(result.note || "", /equipment type.*differs/);
 });
+test("comparison applies the existing CPU/laptop adapter, LAD and charger policy without equating monitor adapters", () => {
+  for (const value of ["CPU ADAPTER", "CPU ADAPTOR", "LAD", "CHARGER", "LAPTOP ADAPTER", "POWER ADAPTOR", "ADAPTER"]) assert.equal(compareField("components",value,"LAPTOP ADAPTER").matches,true,value);
+  assert.equal(compareField("components","MONITOR ADAPTER","LAPTOP ADAPTER").matches,false);
+});
 
 test("description comparison keeps matching model tokens with extra equipment words", () => {
   for (const [left, right] of [["ACER K222HQL", "acer monitor K222HQL"], ["K222HQL", "ACER K222HQL"],
@@ -85,6 +89,10 @@ test("brand-only overlap and different model numbers do not establish descriptio
     ["MONITOR", "DISPLAY"], ["DELL OPTIPLEX 3080", "LENOVO THINKCENTRE M720"]]) {
     assert.equal(compareField("description", left, right).matches, false, `${left}/${right}`);
   }
+});
+test("a shared brand alone cannot confirm a model-bearing description", () => {
+  assert.equal(compareField("description","ACER","ACER K222HQL").matches,false);
+  assert.equal(compareField("description","K222HQL","ACER K222HQL").matches,true);
 });
 
 test("OCR-confusable identifier characters stay mismatches requiring manual verification", () => {

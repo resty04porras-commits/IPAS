@@ -1,6 +1,5 @@
 import {
-  alignRecordsToReferenceBatch, toReferenceRecordFromComparison,
-  mergeObservedComparisonRecord, mapObservedIntakeRecordsToExpected, type ReferenceRecord,
+  alignRecordsToReferenceBatch, type ReferenceRecord,
 } from "./services/referenceAlignment.js";
 import {
   KNOWN_BRANDS, countPopulatedIntakeFields, hasStrongIntakeExtraction, hasUsableIntakeExtraction,
@@ -18,6 +17,9 @@ import {
   compareExtractedRecords,
   type CompareResult, type ExtractedCompareRecord,
 } from "./services/comparison.js";
+import { createComparisonWorkflow, parseComparisonTable, type ComparisonContext } from "./services/comparisonWorkflow.js";
+import { readLocalComparisonPdf } from "./services/comparisonPdf.js";
+import { buildComparisonReportRow } from "./services/comparisonReport.js";
 import { generateSmartCaptureExcelExport } from "./services/smartCaptureWorkbook.js";
 import { drawPdfText, generateOfficialSmartCapturePdfExport } from "./services/smartCapturePdf.js";
 import type { IntakeRecord, AccountabilityFormPayload, AccountabilityExportFormat } from "./types/accountability.js";
@@ -2195,7 +2197,7 @@ async function generateLiquidationExport(
   }
 }
 
-async function extractSourceRecords(ai: GoogleGenAI, source: CompareSourceFile): Promise<ExtractedCompareRecord[]> {
+async function extractSourceRecords(source: CompareSourceFile): Promise<ExtractedCompareRecord[]> {
   const prompt = `
 You extract equipment accountability records from a digital accountability form (PDF or Excel).
 
@@ -2222,7 +2224,7 @@ Field definitions:
 `.trim();
 
   const parsed = await callGeminiForStructuredOutput<any[]>(
-    ai,
+    null,
     [{ text: prompt }, ...buildSourceParts("Source 1", [source])],
     {
       type: Type.ARRAY,
@@ -2247,134 +2249,65 @@ Field definitions:
   return Array.isArray(parsed) ? parsed.map(normalizeExtractedRecord) : [];
 }
 
-async function extractObservedRecords(
-  ai: GoogleGenAI,
-  expectedRecords: ExtractedCompareRecord[],
-  evidenceFiles: CompareSourceFile[]
-): Promise<ExtractedCompareRecord[]> {
-  const referenceRecords = expectedRecords.map(toReferenceRecordFromComparison);
-  const imageEvidenceFiles = evidenceFiles.filter((file) => file.kind === "image");
-  let locallyObservedRecords = expectedRecords.map(() => normalizeExtractedRecord(undefined));
-
-  if (imageEvidenceFiles.length > 0) {
-    try {
-      const localExtraction = await extractIntakeRecordsResilient(imageEvidenceFiles, referenceRecords);
-      locallyObservedRecords = mapObservedIntakeRecordsToExpected(expectedRecords, localExtraction.records);
-    } catch (error) {
-      console.warn("Local OCR comparison fallback failed:", error);
-    }
-  }
-
-  const expectedSummary = expectedRecords
-    .map((record, index) => {
-      return [
-        `Record ${index + 1}: ${record.components}`,
-        `  Expected Description: ${record.description || '(not specified)'}`,
-        `  Expected Hardware ID (Asset Tag): ${record.hardwareId || '(not specified)'}`,
-        `  Expected Serial: ${record.serial || '(not specified)'}`,
-        `  Expected SN: ${record.sn || '(not specified)'}`,
-      ].join("\n");
-    })
-    .join("\n\n");
-
-  const prompt = `
-You are a document verification specialist. Inspect the provided evidence photos and extract the ACTUAL physical values visible for each expected equipment record below.
-
-CRITICAL RULES:
-1. Return EXACTLY one object per expected record, in the SAME ORDER as the list below.
-2. For each expected record, search ALL provided images to find the matching equipment.
-3. Copy ONLY values that are PHYSICALLY READABLE in the photos — never guess or infer.
-4. If a field is not visible or unreadable in any image, return an EMPTY STRING for that field.
-
-HOW TO READ EACH FIELD:
-- components: Identify the equipment type from the device's shape, brand markings, or visible labels. Use UPPERCASE (SYSTEM UNIT, MONITOR, KEYBOARD, PRINTER, MOUSE, LAPTOP, UPS, SCANNER, WEBCAM, CPU ADAPTER, LAPTOP ADAPTER).
-- description: Read the brand name and model number from the manufacturer's label (e.g., DELL OPTIPLEX 7090, ASUS NUC PRO, HP PROBOOK 450).
-- hardwareId: Look for a company property sticker — usually a printed label with a code like CPU-2025-AB1, MTR-2024-XY, or similar PREFIX-YEAR-CODE format. This sticker is separate from the manufacturer label.
-- serial: Read the manufacturer serial number from the factory/manufacturer label. It is labeled "S/N", "Serial No.", "Serial Number", or "SN". Read each character carefully.
-
-SERIAL NUMBER ACCURACY — read character by character. Common OCR confusion pairs:
-  0 vs O, 1 vs I vs L, 5 vs S, 8 vs B, 2 vs Z, 6 vs G, 7 vs T
-
-IMPORTANT:
-- NEVER put the hardware ID value into the serial field, or vice versa — they are always different.
-- If you can see the device but cannot read a specific label, leave that field empty and explain in "notes".
-- In "notes": describe what you actually see — device type found, label visibility, any differences from expected, or if no matching equipment was found.
-- If the evidence shows a DIFFERENT device than expected, record what you actually see and note the discrepancy.
-
-Expected records:
-${expectedSummary}
-`.trim();
-
-  const parsed = await callGeminiForStructuredOutput<any[]>(
-    ai,
-    [{ text: prompt }, ...buildSourceParts("Evidence", evidenceFiles)],
-    {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          sn: { type: Type.STRING },
-          district: { type: Type.STRING },
-          branch: { type: Type.STRING },
-          components: { type: Type.STRING },
-          description: { type: Type.STRING },
-          hardwareId: { type: Type.STRING },
-          serial: { type: Type.STRING },
-          remarks: { type: Type.STRING },
-          notes: { type: Type.STRING },
-        },
-        required: ["sn", "district", "branch", "components", "description", "hardwareId", "serial", "remarks"],
-      },
-    }
-  );
-
-  const extracted = Array.isArray(parsed) ? parsed.map(normalizeExtractedRecord) : [];
-
-  return expectedRecords.map((expected, index) => {
-    const observed = mergeObservedComparisonRecord(locallyObservedRecords[index], extracted[index]);
-    if (!observed) {
-      return {
-        ...normalizeRecord({ components: expected.components, description: expected.description }),
-        notes: "No matching evidence was extracted for this record. The item may not be present in the evidence or was not clearly visible for extraction.",
-      };
-    }
-
-    return {
-      ...observed,
-      components: observed.components || expected.components,
-      description: observed.description || expected.description,
-    };
-  });
+type ComparisonObservation = { record: IntakeRecord; barcodes: import("./types/barcode.js").BarcodeCandidate[]; ocrText: string; assisted?: boolean };
+const comparisonSourceCache = new Map<string, { records: ExtractedCompareRecord[]; expires: number }>();
+const comparisonImageCache = new Map<string, { observation: ComparisonObservation; expires: number }>();
+function comparisonCacheKey(scope: string, file: CompareSourceFile) {
+  return crypto.createHash("sha256").update(scope + ":" + getIntakeCacheKey(file)).digest("hex");
 }
-
-async function runGeminiComparison(source1: CompareSourceFile, source2: CompareSourceFile[]): Promise<CompareResult[]> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("GEMINI_API_KEY is not configured.");
+async function readComparisonSource(file: CompareSourceFile, scope: string): Promise<ExtractedCompareRecord[]> {
+  const key = comparisonCacheKey(scope, file), existing = comparisonSourceCache.get(key);
+  if (existing && existing.expires > Date.now()) return structuredClone(existing.records);
+  const local = parseComparisonTable(file) || await readLocalComparisonPdf(file);
+  // The old proximity parser can return only part of a PDF table or copy a
+  // neighboring row. Unsupported layouts use the complete-source extractor.
+  const records = local || await extractSourceRecords(file);
+  if (local) console.info(`[Comparison] reference=${file.kind === "pdf" ? "local-pdf" : "local-table"} rows=${local.length}`);
+  const usable = records.filter(row => [row.components,row.description,row.hardwareId,row.serial].some(value => value.trim()));
+  if (usable.length) {
+    comparisonSourceCache.set(key, { records: structuredClone(usable), expires: Date.now() + 24 * 60 * 60 * 1000 });
+    if (comparisonSourceCache.size > 20) comparisonSourceCache.delete(comparisonSourceCache.keys().next().value!);
   }
-
-  const ai = new GoogleGenAI({ apiKey });
-  const extractedReferenceRecords = extractReferenceRecords(source1).map((record) => ({
-    sn: "",
-    district: "",
-    branch: "",
-    components: record.components,
-    description: record.description,
-    hardwareId: record.hardwareId,
-    serial: record.serial,
-    remarks: record.remarks,
-    notes: record.notes,
-  }));
-  const expectedRecords = extractedReferenceRecords.length > 0
-    ? extractedReferenceRecords.map(normalizeExtractedRecord)
-    : await extractSourceRecords(ai, source1);
-
-  if (expectedRecords.length === 0) {
-    throw new Error("No structured records were extracted from the source PDF/document.");
+  return usable;
+}
+async function readComparisonImage(file: CompareSourceFile, scope: string): Promise<ComparisonObservation> {
+  const key = comparisonCacheKey(scope, file), existing = comparisonImageCache.get(key);
+  if (existing && existing.expires > Date.now()) return structuredClone(existing.observation);
+  // Shared intake cache entries are written before reference reconciliation.
+  // Never use barcode/database lookup records as observed photo fields.
+  const intake = intakeExtractionCache.get(getIntakeCacheKey(file));
+  if (intake) return { record: { ...intake, sourceName: file.name, remarks: "" }, barcodes: [], ocrText: "" };
+  const [ocr, barcode] = await Promise.allSettled([extractRegionalOcrSnapshots(file), scanIntakeBarcode(file)]);
+  const snapshots = ocr.status === "fulfilled" ? ocr.value : { full: buildPlainTextSnapshot(""), probes: [] };
+  const scan = barcode.status === "fulfilled" ? barcode.value : null;
+  const barcodes = [...(scan?.barcodes || [])];
+  if (scan?.barcode && !barcodes.some(item => item.value === scan.barcode)) barcodes.push({ value: scan.barcode, type: scan.type });
+  const ocrText = [snapshots.full.text,...snapshots.probes.map(probe => probe.snapshot.text)].join("\n");
+  const record = prepareLocalVisionRecord(buildIntakeRecordFromOcr(file.name, snapshots), barcodes, ocrText);
+  record.remarks = "";
+  record.notes = record.notes?.replaceAll("PaddleOCR", "OCR");
+  if (ocr.status === "rejected") record.notes = combineExtractionNotes(record.notes, "Local OCR could not finish. Review this original photo.");
+  const observation = { record, barcodes, ocrText };
+  if (ocr.status === "fulfilled") {
+    comparisonImageCache.set(key, { observation: structuredClone(observation), expires: Date.now() + 24 * 60 * 60 * 1000 });
+    if (comparisonImageCache.size > 100) comparisonImageCache.delete(comparisonImageCache.keys().next().value!);
   }
-
-  const observedRecords = await extractObservedRecords(ai, expectedRecords, source2);
-  return compareExtractedRecords(expectedRecords, observedRecords);
+  return observation;
+}
+async function assistComparisonImage(file: CompareSourceFile, observation: ComparisonObservation, scope: string): Promise<ComparisonObservation> {
+  const [proposal] = await extractIntakeRecordsWithGemini([file]);
+  const validation = validateVisionDraft(proposal, { observedRecord: observation.record, barcodes: observation.barcodes || [], ocrText: observation.ocrText || "" });
+  const merged = mergeVisionDraft(observation.record, validation);
+  const assisted = { ...observation, assisted: true, record: { ...merged.record, remarks: "", notes: combineExtractionNotes(merged.record.notes, validation.proposal.notes,
+    "Gemini-assisted physical draft; compare the values with the original photo.", merged.requiresReview ? "[Vision review required] " + merged.issues.map(issue => issue.message).join(" ") : "") } };
+  comparisonImageCache.set(comparisonCacheKey(scope, file), { observation: structuredClone(assisted), expires: Date.now() + 24 * 60 * 60 * 1000 });
+  if (comparisonImageCache.size > 100) comparisonImageCache.delete(comparisonImageCache.keys().next().value!);
+  return assisted;
+}
+const comparisonWorkflow = createComparisonWorkflow({ readSource: readComparisonSource, readImage: readComparisonImage,
+  assistImage: assistComparisonImage, needsAssistance: needsIntakeVision, allowAssistance: cloudAiEnabled && intakeAiFallbackEnabled, maxAssistedImages: intakeAiMaxImages });
+async function runGeminiComparison(source1: CompareSourceFile, source2: CompareSourceFile[], context: ComparisonContext = {}): Promise<CompareResult[]> {
+  return (await comparisonWorkflow(source1, source2, context)).map(result => ({...result,reportRow:buildComparisonReportRow(result)}));
 }
 
 async function extractIntakeRecordsWithGemini(evidenceFiles: CompareSourceFile[]): Promise<IntakeRecord[]> {

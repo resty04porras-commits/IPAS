@@ -51,6 +51,7 @@ export function createAccountabilityRoutes(
 
   // Comparison Tools
   router.post("/compare", controller.compare);
+  router.post("/compare/export", controller.exportComparison);
 
   router.post(
     "/compare-upload",

@@ -1,97 +1,193 @@
-# Comparison rules and results: editable source guide
+# Comparison Tools: physical evidence and progress
 
-## Change
+## Behavior
 
-`services/comparison.ts` now owns the existing pure comparison rules, comparison
-record types, record normalization and batch result builder. `server.ts` imports
-the same entry points and continues to own extraction and API orchestration.
+Comparison Tools reads the reference document once, reads each distinct evidence
+file, then compares Components, Description, Hardware ID and Serial. Reference
+values never fill blank physical fields or appear in an image-assistance prompt.
+A field that cannot be read remains blank. These are draft readings that require
+checking against the original labels and document.
 
-`server.ts` decreases from 4,560 to 4,164 lines. All 15 moved function bodies
-and four type definitions retain their original contents. Only source locations,
-exports and imports change. The module has no runtime dependency or service.
+Results use one equipment row with exactly five columns: Components, Description,
+Hardware ID, Serial and Remarks. Every result is included, including matching
+equipment. The four main columns show the PDF reference values; an unassigned
+photo-only row shows its observed values. The Remarks describe image differences
+in English. This presentation does not copy reference values into physical OCR
+fields or change the matching outcome.
 
-## Daily editing
+Examples:
 
-Use Ctrl+P in VS Code to open the relevant source:
-
-| Task | Location |
+| Finding | Remarks |
 | --- | --- |
-| Component aliases, description matching, identifier formatting and mismatch explanations | `services/comparison.ts`, function `compareField` and its helpers |
-| Match/mismatch/missing statuses, critical-field order and final notes | Same module, function `compareExtractedRecords` |
-| Comparison record normalization and TypeScript types | Same module, `normalizeRecord`, `normalizeExtractedRecord` and exported types |
-| Shared text/identifier normalization and ordered deduplication | Same module, `normalizeGeneral`, `normalizeIdentifier`, `dedupePreserveOrder` |
-| AI/OCR extraction, reference alignment, record merging and API orchestration | `server.ts` |
+| All compared values match | `Match` |
+| Different serial | `Serial number mismatch: PDF "ABC0"; image "ABCO".` |
+| Serial not read | `Serial number not readable in the image. PDF: "ABC0".` |
+| No matched readable image details | `Missing image evidence. Verify Hardware ID "MTR-2024-001" and serial number "ABC0" against the original photo.` |
+| Unassigned photo | `No matching PDF record identified. Verify the equipment identifiers.` |
 
-The shared normalization helpers are also imported by the existing intake/OCR
-code in the server. Changes to those helpers can affect those callers; validate
-the relevant tests. Edit source, check, build and restart. The compiled
-`dist-server/server.cjs` file is generated output.
+Missing image evidence is a verification finding, not proof that the equipment
+has been lost. Conflicting or ambiguous identifiers request manual verification.
+Two units of the same type keep separate rows; display/export does not deduplicate
+them. Remarks generated here are specific to Comparison Tools. Manual Remarks in
+Smart Capture remain unchanged.
 
-## Preserved behavior
+Excel and PDF downloads use the same five columns and include matches. The report
+has black cell borders and wrapped text; PDF headers repeat across pages. Export
+uses the comparison-only `POST /api/compare/export` endpoint, which validates the
+results and generates a download without cloud AI, database writes or uploads.
+This report does not replace official accountability or other module templates.
+If the PDF font cannot encode a character, export fails explicitly and Excel can
+retain the original text; identifiers are not silently substituted.
 
-- The four critical fields remain components, description, hardwareId and serial.
-- Identifier comparison ignores case and punctuation. Leading zeros are retained.
-- Component aliases and description token-matching rules remain unchanged.
-- OCR-confusable identifier characters remain mismatches with a manual-check note.
-  The comparison does not silently correct those characters or save replacements.
-- Similar values remain mismatches. Existing similarity thresholds and explanatory
-  text are unchanged, including their current edge cases.
-- Batch comparison uses the supplied index alignment. It does not itself reorder
-  observations or add extra observations to the expected records.
-- Empty evidence retains the current missing status; partial evidence retains
-  the current mismatch behavior. Extraction/merging before this function remains
-  in the server and can supply field values before comparison.
-- Returned document/image values, mismatch order, field notes and final notes
-  retain their existing contents. Caller records are not mutated.
+The underlying result array still contains document/image values, statuses and
+field notes, with an added `reportRow` presentation object. The existing frontend
+history, Clear All and Proceed to Upload actions are retained. The comparison
+renderer hides only the original per-field table while its five-column view is
+available. No equipment records or storage uploads are created by extraction;
+the existing frontend saves a successful comparison history entry as before.
 
-This extraction changes no matching policy, OCR accuracy, AI model, routing,
-database storage, export layout, camera sync, frontend, port or HTTPS setup.
+## Association and identifiers
 
-## Files to copy
+- Exact identifiers are compared within the same field. Formatting and case may
+  differ; leading zeros and OCR-confusable characters such as `0`/`O` are not
+  silently corrected.
+- Complementary photos may combine when their identifiers identify the same
+  document row. A unique readable equipment type/model is a weaker association
+  with an explicit physical-unit review note.
+- The same model on two document rows does not choose the first unit. Ambiguous
+  or unmatched physical evidence is included separately with a blank document
+  side. A hardware tag and serial pointing to different rows produce a warning.
+- Conflicting photo values leave that field blank and list the candidates in its
+  field notes. An explicitly read manufacturer S/N outranks an SNID fallback.
+  Serial-only and tag-only photos that cannot identify one unit remain separate;
+  the program does not guess that they belong together.
+- CPU Adapter/LAD/charger follow the shared Laptop Adapter policy. Monitor Adapter
+  stays distinct. A shared brand alone does not confirm a model-bearing
+  description. Hardware identifiers retain their existing comparison rules.
+- Remarks are not inferred as physical evidence.
 
-| Download | Destination |
+## Reading, limits and cancellation
+
+A recognized structured Excel table or five-column text PDF form is read locally
+without a reference AI call. The PDF reader uses the installed PDF.js package,
+not a shell program or cloud service. It assigns text by column position and
+row, preserves identifier characters and empty cells, and excludes the form's
+metadata and acknowledgement text. The supplied one-page accountability PDF
+was verified to contain seven rows that can all be read this way.
+
+The comparison-only browser adapter sends original PDF bytes instead of the
+recovered frontend's flattened text so the server retains column geometry.
+Multipart uploads already retain those bytes. Other input types and staged
+upload files are unchanged. PDF.js is loaded dynamically from node_modules;
+the generated CJS server bundle and other PDF export libraries remain separate.
+
+The local reader accepts up to 20 MB / 30 pages / 100,000 text items. It rejects
+ambiguous columns, overlapping identifiers, unsupported rotation or an
+unrecognized continuation page rather than returning an incomplete expected
+table. Image-only scans and unsupported layouts still use the existing complete
+document reader when cloud reading is enabled and has allowance. When that is
+unavailable, an explicit error is shown. This update does not guarantee local
+reading of every PDF layout or add a renderer/OCR service for scanned PDF pages.
+
+Evidence photos use existing local regional OCR and barcode label interpretation.
+Database lookup values are not substituted for visible photo values. Cloud
+assistance is optional and limited to the existing `INTAKE_AI_MAX_IMAGES_PER_REQUEST`
+(default 2). There is no additional all-images cloud pass, model switching or
+increase to worker parallelism or the shared request allowance. Reference calls
+and image assistance consume that same installation budget. Recognized local
+PDF/Excel reading consumes no provider allowance. An exhausted image-assistance
+budget leaves local physical values available for comparison. Current owner limits
+are 5 attempts/minute and 10/24 hours; provider limits remain separate.
+
+Evidence is processed sequentially, with at most one comparison active per server
+process. Exact duplicate evidence bytes are read once per request. Successful
+source and image readings are cached in process memory for up to 24 hours,
+scoped by employee and file content (20 source entries, 100 image entries).
+Existing raw intake readings can be reused; reference-aligned results and barcode
+repository records are not used as physical values. A manual retry may assist
+previously unassisted unclear photos within the same per-request allowance;
+failed assistance remains retryable. Restart clears these caches.
+
+The optional `Accept: application/x-ndjson` protocol sends headers and progress
+before OCR, heartbeats while reading, then one final result or explicit error.
+Legacy JSON clients retain the original array/error format. The frontend adapter
+is limited to the two comparison POST endpoints and the Comparison Tools page.
+It returns streamed JSON to the recovered frontend so its old 90-second wait for
+response headers no longer aborts normal multi-image reading. The compiled
+frontend bundle is unchanged.
+
+Local daily/minute allowance errors and cooldown now have distinct explanations.
+The browser retains an explicit streamed error even when its transport reduces
+stream errors to a generic "Failed to fetch" message. The request allowance,
+private budget ledger and provider model are unchanged; no counters are reset.
+
+The comparison has a 15-minute limit and can be cancelled. Leaving the page or
+account also cancels the browser request. Cancellation stops subsequent work
+after the current bounded OCR/provider call returns; it does not forcibly kill
+shared OCR workers. A very large upload can still encounter the native client's
+header timeout before it reaches the server. Retry after the current read ends
+can reuse successful in-memory readings. The selected browser files are kept.
+
+## Editable sources
+
+| Responsibility | File |
 | --- | --- |
-| `comparison.ts` | `/srv/IPAS-PUBLISH/services/comparison.ts` |
-| `comparison.test.ts` | `/srv/IPAS-PUBLISH/tests/comparison.test.ts` |
-| `server.ts` | `/srv/IPAS-PUBLISH/server.ts` |
-| `IPAS-COMPARISON.md` | `/srv/IPAS-PUBLISH/docs/IPAS-COMPARISON.md` |
+| Field rules and result shape | `services/comparison.ts` |
+| Safe physical association, progress and sequencing | `services/comparisonWorkflow.ts` |
+| Local PDF table geometry and installed PDF.js loader | `services/comparisonPdf.ts` |
+| Five-column values, English findings and comparison-only downloads | `services/comparisonReport.ts` |
+| Optional streamed API response | `services/comparisonStream.ts` |
+| Comparison route handlers and upload cleanup | `controllers/accountabilityController.ts` |
+| Existing readers, bounded AI client and scoped caches | `server.ts` |
+| Comparison-only browser adapter | `frontend-prebuilt/assets/ipas-comparison-progress.js` |
+| Equipment-row presentation and scoped export button handling | `frontend-prebuilt/assets/ipas-comparison-report.js` |
+| Comparison download routing | `routes/accountabilityRoutes.ts` |
+| Adapter inclusion | `frontend-prebuilt/index.html` |
 
-The replacement server is based on owner commit `1711b7e`. Before replacing it,
-verify the existing server SHA256:
+Smart Capture camera code, equipment grouping, ticket cameras, intake reference
+alignment, exports and other modal implementations are not replaced by this
+change. The shared general/identifier normalization functions are unchanged.
 
-```text
-05f0396f09bcec018e01dfeb45be0195ae82f22508ecf5266e33e606a8f787ea
-```
+## Verification and installation
 
-If the hash differs, merge into the newer source instead. Back up both the source
-server and compiled server before replacing or building.
+This report update follows the tested comparison and local-PDF corrections on
+owner branch `refactor/modular-server`, last saved commit `7556cd6`. The report
+update's server baseline is
+`3b76e6c22ce06afb24b4c28c6a42b374536ff90cfa16cf00cd8b9583ba47ceef`.
+Back up the six replacement files and generated server before copying the nine
+report files. Keep unrelated staged `phase2b.py` and root
+`ipas-ocr-label-check.mjs` outside the scoped commit.
 
-## Validation and saving
-
-Run from `/srv/IPAS-PUBLISH` after copying the module, test and replacement server:
+Check the installed PDF.js Node reader before copying the correction. Its current
+package supports Node >=20.19, >=22.13 or >=24 and includes optional native support
+used by its Node loader. A missing dependency or unsupported Node version must
+be resolved before relying on local PDF reading:
 
 ```bash
-node --import tsx --test tests/comparison.test.ts tests/smartCaptureWorkbook.test.ts tests/smartCapturePdf.test.ts tests/liquidationPdf.test.ts tests/liquidationWorkbook.test.ts tests/officeXml.test.ts tests/zipArchive.test.ts tests/liquidationRecords.test.ts tests/liquidationText.test.ts tests/structuredAi.test.ts tests/uploadedSources.test.ts tests/barcodeWorker.test.ts tests/ocrWorkerPool.test.ts tests/ocrServiceLifecycle.test.ts tests/ocrHttpClient.test.ts tests/ocrRecognizer.test.ts tests/ocrRoutes.test.ts tests/documentRepositoryRoutes.test.ts
-NODE_OPTIONS="--max-old-space-size=3072" npm run lint
-npm run build:server
+node --input-type=module -e 'await import("pdfjs-dist/legacy/build/pdf.mjs"); console.log("Local PDF reader: READY; Node " + process.version)'
 ```
 
-The 26 new tests cover formatting, aliases, description/model differences,
-missing values, OCR-confusable identifiers, similarity thresholds, batch status,
-notes, index alignment and input integrity. Separate checks compare original
-baseline declarations with the extracted module across 4,356 field pairs,
-250 synthetic batches and 66 shared normalizations, including exact output notes.
+```bash
+node --import tsx --test tests/comparisonReport.test.ts tests/comparisonPdf.test.ts tests/comparison.test.ts tests/comparisonWorkflow.test.ts tests/comparisonStream.test.ts tests/referenceAlignment.test.ts tests/cameraSync.test.ts tests/captureAutofill.test.ts tests/captureStorageUpload.test.ts tests/equipmentLabels.test.ts tests/equipmentUnits.test.ts tests/visionValidation.test.ts
+NODE_OPTIONS="--max-old-space-size=3072" npm run lint
+npm run build:server
+npm run build:web
+systemctl --user restart ipas.service
+curl -sS --max-time 20 -w '\nHTTP %{http_code}\n' http://127.0.0.1:3000/api/health
+```
 
-Compiled Linux API checks run before/after `/api/compare` requests using a local
-synthetic Gemini response server and a dummy key. They verify identical match,
-mismatch and missing results, raw identifier values, notes and missing-source
-validation. They do not contact external AI or exercise real-image OCR, Windows
-automation, owner data or database writes. See `VERIFICATION.json` and the
-individual reports for completed checks and scope.
+Tests cover physical/reference separation, duplicates, ambiguous units, conflicts,
+serial priority, assistance limits, progress, cancellation, legacy JSON, errors,
+upload cleanup and the recovered browser workflow. Local extraction from the
+actual supplied PDF was checked against all seven rows. A compiled API check
+uses that PDF plus synthetic OCR responses with the 10-attempt temporary budget
+already exhausted; all seven images are processed with zero provider requests.
+This does not measure recognition accuracy on the owner's actual photographs.
+Verify that live comparison after installation, including serials, blanks, extra
+evidence and the existing export actions, before saving this update to GitHub.
 
-Restart `ipas.service`, check `/api/health`, and run a small comparison fixture
-on the owner VM. Normal image-based comparison still depends on the existing
-OCR/AI services and the quality of the input evidence.
-Commit only the four files listed above, then push `refactor/modular-server`
-after verification. Keep unrelated staged `phase2b.py` and untracked
-`ipas-ocr-label-check.mjs` outside this change.
+Additional report checks cover the five-column view, exact English findings,
+matching-row exports, significant identifier characters, repeated PDF headers,
+literal Excel strings, bounded export input, download errors and navigation.
+The renderer leaves source selection, camera, ticket and other modal handlers
+in the recovered compiled frontend intact; the compiled bundle is unchanged.
